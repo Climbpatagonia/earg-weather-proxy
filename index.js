@@ -50,8 +50,8 @@ function parseWeatherData(html) {
     updatedAt:            new Date().toISOString(),
     temperature:          outTemp   ? outTemp.replace('°C', '').trim() : null,
     feelsLike:            feelsLike ? feelsLike.replace(/^ST:\s*/i, '').trim() : null,
-    windSpeed:            kmhToKnots(windSpeed),
-    windGust:             kmhToKnots(windGust),
+    windSpeed:            windSpeed ? windSpeed.trim() : null,
+    windGust:             windGust  ? windGust.trim()  : null,
     windDirection:        windDir   ? windDir.trim() : null,
     windDirectionDegrees: degreesToCompass(windDeg),
     pressure:             barometer ? barometer.trim() : null,
@@ -125,8 +125,8 @@ app.get('/weather-view', async (req, res) => {
     const rows = [
       ['Temperatura',      d.temperature  ? `${d.temperature} °C`  : '—'],
       ['Sensación térmica', d.feelsLike   ? `${d.feelsLike} °C`    : '—'],
-      ['Viento',           d.windSpeed    ? `${d.windSpeed} kn`     : '—'],
-      ['Ráfaga',           d.windGust     ? `${d.windGust} kn`      : '—'],
+      ['Viento',           kmhToKnots(d.windSpeed) ? `${kmhToKnots(d.windSpeed)} kn` : '—'],
+      ['Ráfaga',           kmhToKnots(d.windGust)  ? `${kmhToKnots(d.windGust)} kn`  : '—'],
       ['Dirección',        d.windDirectionDegrees                   ?? '—'],
       ['Presión',          d.pressure                               ?? '—'],
       ['Punto de rocío',   d.dewPoint                               ?? '—'],
@@ -214,3 +214,4 @@ app.listen(PORT, () => {
   console.log(`Weather proxy running on port ${PORT}`);
   console.log(`Source URL: ${SOURCE_URL}`);
 });
+
