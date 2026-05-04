@@ -1,3 +1,4 @@
+import md5 from 'md5';
 import express from 'express';
 
 const app = express();
@@ -94,6 +95,8 @@ function errorPage(message) {
 </body>
 </html>`;
 }
+
+// ─── RUTAS EXPRESS ────────────────────────────────────────────────────────────
 
 app.get('/', (_req, res) => res.redirect('/weather-view'));
 
@@ -209,74 +212,80 @@ app.get('/raw', async (_req, res) => {
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', sourceUrl: SOURCE_URL, timestamp: new Date().toISOString() });
 });
-const md5 = require('md5');
 
-// ─── CONFIGURACIÓN WINDGURU ───────────────────────────────────────────────────
-const WG_UID      = process.env.WG_UID;       // UID de tu estación en Windguru
-const WG_PASSWORD = process.env.WG_PASSWORD;  // Contraseña de tu estación
+// ─── WINDGURU UPLOAD ──────────────────────────────────────────────────────────
+const WG_UID      = process.env.WG_UID;
+const WG_PASSWORD = process.env.WG_PASSWORD;
 
-// Convierte dirección cardinal a grados
+// Convierte un string con posibles unidades a número flotante
+function toFloat(str) {
+  if (!str) return null;
+  const n = parseFloat(str.replace(',', '.').replace(/[^0-9.\-]/g, ''));
+  return isNaN(n) ? null : n;
+}
+
+// Convierte punto cardinal a grados (0–360)
 function directionToDegrees(dir) {
   const map = {
     N: 0, NNE: 22.5, NE: 45, ENE: 67.5,
     E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
     S: 180, SSO: 202.5, SO: 225, OSO: 247.5,
     O: 270, ONO: 292.5, NO: 315, NNO: 337.5,
-    // También en inglés por si acaso
     SSW: 202.5, SW: 225, WSW: 247.5,
     W: 270, WNW: 292.5, NW: 315, NNW: 337.5,
   };
   return map[dir?.toUpperCase()] ?? null;
 }
 
-// Obtiene los datos actuales de tu propia API JSON
-async function fetchWeatherData() {
-  const res = await fetch('http://localhost:' + (process.env.PORT || 3000) + '/api/weather');
-  return res.json();
-}
-
-// Envía los datos a Windguru
 async function uploadToWindguru() {
+  if (!WG_UID || !WG_PASSWORD) {
+    console.warn('[Windguru] WG_UID o WG_PASSWORD no configurados — saltando upload.');
+    return;
+  }
   try {
-    const data = await fetchWeatherData();
+    const response = await fetch(SOURCE_URL, { method: 'GET' });
+    if (!response.ok) throw new Error(`Source HTTP ${response.status}`);
+    const d = parseWeatherData(await response.text());
 
-    const salt = Date.now().toString();
-    const hash = md5(salt + WG_UID + WG_PASSWORD);
+    const salt    = Date.now().toString();
+    const hash    = md5(salt + WG_UID + WG_PASSWORD);
 
-    const windDeg = directionToDegrees(data.wind_direction);
+    // Viento: la fuente entrega km/h → convertir a nudos para Windguru
+    const windAvg = toFloat(kmhToKnots(d.windSpeed));
+    const windMax = toFloat(kmhToKnots(d.windGust));
+    const windDeg = directionToDegrees(d.windDirection);
+    const temp    = toFloat(d.temperature);
+    const rh      = toFloat(d.humidity);
+    const mslp    = toFloat(d.pressure);
+    const precip  = toFloat(d.rain);
 
-    const params = new URLSearchParams({
-      uid:            WG_UID,
-      salt:           salt,
-      hash:           hash,
-      wind_avg:       data.wind_knots,
-      wind_max:       data.gust_knots,
-      temperature:    data.temperature,
-      rh:             data.humidity,
-      mslp:           data.pressure,
-      precip:         data.rain_day,
-      precip_interval: 86400,  // lluvia del día = 24h en segundos
-      interval:       60,
-      ...(windDeg !== null && { wind_direction: windDeg }),
-    });
+    const params = new URLSearchParams({ uid: WG_UID, salt, hash, interval: 60 });
+    if (windAvg  !== null) params.set('wind_avg',        windAvg);
+    if (windMax  !== null) params.set('wind_max',        windMax);
+    if (windDeg  !== null) params.set('wind_direction',  windDeg);
+    if (temp     !== null) params.set('temperature',     temp);
+    if (rh       !== null) params.set('rh',              rh);
+    if (mslp     !== null) params.set('mslp',            mslp);
+    if (precip   !== null) {
+      params.set('precip',          precip);
+      params.set('precip_interval', 86400); // lluvia acumulada del día = 24 h
+    }
 
-    const url = `http://www.windguru.cz/upload/api.php?${params.toString()}`;
+    const url  = `http://www.windguru.cz/upload/api.php?${params.toString()}`;
     const resp = await fetch(url);
     const text = await resp.text();
-
     console.log(`[Windguru] ${new Date().toISOString()} → ${text}`);
   } catch (err) {
-    console.error('[Windguru] Error al enviar:', err.message);
+    console.error('[Windguru] Error:', err.message);
   }
 }
 
-// Envía cada 60 segundos
-setInterval(uploadToWindguru, 60 * 1000);
-// También envía al arrancar
+// Envía al arrancar y luego cada 60 segundos
 uploadToWindguru();
+setInterval(uploadToWindguru, 60 * 1000);
 
+// ─── INICIO DEL SERVIDOR ──────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Weather proxy running on port ${PORT}`);
   console.log(`Source URL: ${SOURCE_URL}`);
 });
-
