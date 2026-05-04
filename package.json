@@ -14,4 +14,5 @@
     "node": ">=18"
   },
   "license": "MIT"
+  npm install md5
 }
