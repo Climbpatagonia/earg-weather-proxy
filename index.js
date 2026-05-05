@@ -14,11 +14,13 @@ const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
-// --- FUNCIÓN DE EXTRACCIÓN ORIGINAL (La que le gustaba al Garmin) ---
+// Función de extracción mejorada para evitar valores vacíos
 function extractValue(html, className) {
+  // Busca el contenido dentro de la clase y limpia etiquetas HTML remanentes
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   const match = html.match(regex);
   if (!match || !match[1]) return null;
+  // Limpia símbolos de grado y espacios
   return match[1].replace(/&deg;|&#176;|°/g, '').trim();
 }
 
@@ -34,8 +36,16 @@ function parseWeatherData(html) {
     stationTime = new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false }) + " hs";
   }
 
-  // Extraemos la dirección exactamente como venía en la web original (en letras)
-  const direccionEnLetras = extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--";
+  // INTENTO DE CAPTURA DE DIRECCIÓN (Letras)
+  // Probamos con 'winddir' y si falla buscamos en el texto plano del HTML como último recurso
+  let rawDir = extractValue(html, 'winddir') || extractValue(html, 'curwinddir');
+  
+  if (!rawDir) {
+    // Intento desesperado: buscar cualquier texto corto que parezca una dirección cerca de la palabra "wind"
+    const fallbackRegex = /class="winddir">?\s*([A-Z]{1,3})/i;
+    const fallbackMatch = html.match(fallbackRegex);
+    rawDir = fallbackMatch ? fallbackMatch[1] : "--";
+  }
 
   return {
     stationTime,
@@ -43,14 +53,13 @@ function parseWeatherData(html) {
     feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed: extractValue(html, 'curwindspeed'),
     windGust: extractValue(html, 'curwindgust'),
-    windDir: direccionEnLetras, // "N", "SW", "SO", etc.
+    windDir: rawDir, 
     pressure: extractValue(html, 'barometer'),
     humidity: extractValue(html, 'outHumidity'),
     rain: extractValue(html, 'dayRain'),
   };
 }
 
-// --- ENDPOINT JSON (El que lee tu reloj) ---
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_data");
   if (!data) {
@@ -58,16 +67,11 @@ app.get('/weather', async (req, res) => {
       const response = await axios.get(SOURCE_URL, { timeout: 8000 });
       data = parseWeatherData(response.data);
       weatherCache.set("weather_data", data);
-    } catch (e) { 
-      return res.status(502).json({ error: "Error de conexión" }); 
-    }
+    } catch (e) { return res.status(502).json({ error: "Error" }); }
   }
-  
-  // Enviamos los datos puros. Garmin leerá "windDir" directamente en letras
   res.json(data);
 });
 
-// --- VISTA HTML (Tu página web) ---
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -89,14 +93,10 @@ app.get('/', async (req, res) => {
           body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
           .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
           h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
-          
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
-            margin-bottom: 0.1rem;  /* Datos bien pegados arriba */
-            padding-bottom: 7rem;   /* Línea empujada hacia abajo */
-            border-bottom: 1px solid #334155; 
+            margin-bottom: 0.3rem; padding-bottom: 5rem; border-bottom: 1px solid #334155; 
           }
-          
           table { width: 100%; border-collapse: collapse; }
           td { padding: 10px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
@@ -125,7 +125,6 @@ app.get('/', async (req, res) => {
   } catch (e) { res.status(502).send("Error"); }
 });
 
-// Sincronización Windguru cada 2 min
 setInterval(async () => {
   if (!WG_UID || !WG_PASSWORD) return;
   let d = weatherCache.get("weather_data");
