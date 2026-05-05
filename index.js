@@ -305,7 +305,7 @@ app.use(cors());
 const weatherCache = new NodeCache({ stdTTL: 180 });
 
 // URL de la página original (HTTP) que Garmin no acepta directamente
-const TARGET_URL = "http://TU_URL_ORIGINAL_AQUI"; 
+const TARGET_URL = "http://http://earg_met.mooo.com:88/meteo/"; 
 
 app.get('/weather', async (req, res) => {
     const cacheKey = "weather_data";
@@ -349,3 +349,9 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Servidor proxy corriendo en el puerto ${PORT}`);
 });
+"dependencies": {
+  "axios": "^1.x.x",
+  "cors": "^2.x.x",
+  "express": "^4.x.x",
+  "node-cache": "^5.x.x"
+}
