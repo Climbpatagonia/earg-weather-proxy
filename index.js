@@ -18,6 +18,7 @@ const weatherCache = new NodeCache({ stdTTL: 180 });
 // ─── FUNCIONES DE EXTRACCIÓN ───────────────────────────────────────────────
 
 function extractValue(html, className) {
+  // Intentamos capturar el contenido de la clase de forma más flexible
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   const match = html.match(regex);
   if (!match || !match[1]) return null;
@@ -31,9 +32,16 @@ function kmhToKnots(value) {
 }
 
 function parseWeatherData(html) {
+  // Intentamos sacar la hora de la estación
+  let stationTime = extractValue(html, 'lastupdate');
+  
+  // Si falla (o devuelve algo vacío), usamos la hora actual del sistema como respaldo
+  if (!stationTime || stationTime.length < 3) {
+    stationTime = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) + " (Proxy)";
+  }
+
   return {
-    // EXTRAEMOS LA HORA REAL DE LA PÁGINA (clase 'lastupdate')
-    stationTime: extractValue(html, 'lastupdate'), 
+    stationTime: stationTime,
     temperature: extractValue(html, 'outtemp'),
     feelsLike:   (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed:   extractValue(html, 'curwindspeed'),
@@ -53,7 +61,8 @@ app.get('/', async (req, res) => {
 
   try {
     if (!data) {
-      const response = await axios.get(SOURCE_URL, { timeout: 8000 });
+      // Agregamos un timeout más largo por si la página de la estación está lenta
+      const response = await axios.get(SOURCE_URL, { timeout: 10000 });
       data = parseWeatherData(response.data);
       weatherCache.set(cacheKey, data);
     }
@@ -77,14 +86,14 @@ app.get('/', async (req, res) => {
           table { width: 100%; border-collapse: collapse; }
           td { padding: 12px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
-          .value { text-align: right; font-weight: bold; }
-          .updated { font-size: 0.75rem; color: #6366f1; margin-top: 1.5rem; text-align: center; background: #1e1b4b; padding: 5px; border-radius: 4px; }
+          .value { text-align: right; font-weight: bold; color: #f1f5f9; }
+          .updated { font-size: 0.75rem; color: #818cf8; margin-top: 1.5rem; text-align: center; background: #1e1b4b; padding: 8px; border-radius: 6px; border: 1px solid #312e81; }
         </style>
       </head>
       <body>
         <div class="card">
           <h1>Estación Río Grande</h1>
-          <p class="subtitle">Datos oficiales EARG</p>
+          <p class="subtitle">Datos meteorológicos en tiempo real</p>
           <table>
             <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
             <tr><td class="label">Sensación térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
@@ -94,17 +103,24 @@ app.get('/', async (req, res) => {
             <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'}</td></tr>
             <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'}</td></tr>
           </table>
-          <p class="updated">Última lectura estación: ${data.stationTime || 'Consultando...'}</p>
+          <div class="updated">Lectura: ${data.stationTime}</div>
         </div>
       </body>
       </html>
     `);
   } catch (e) {
-    res.status(502).send("Error de conexión con la estación.");
+    res.status(502).send(`
+      <body style="background:#0f172a;color:#e2e8f0;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;">
+        <div style="text-align:center;">
+          <p>⚠️ La estación meteorológica no responde.</p>
+          <button onclick="location.reload()" style="background:#334155;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;">Reintentar</button>
+        </div>
+      </body>
+    `);
   }
 });
 
-// ─── ENDPOINT JSON & WINDGURU ───────────────────────────────────────────────
+// ─── ENDPOINT JSON ──────────────────────────────────────────────────────────
 
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_json");
@@ -116,6 +132,8 @@ app.get('/weather', async (req, res) => {
     res.json(data);
   } catch (e) { res.status(502).json({ error: "No disponible" }); }
 });
+
+// ─── WINDGURU ───────────────────────────────────────────────────────────────
 
 async function uploadToWindguru() {
   if (!WG_UID || !WG_PASSWORD) return;
@@ -135,4 +153,4 @@ async function uploadToWindguru() {
 }
 
 setInterval(uploadToWindguru, 60000);
-app.listen(PORT, () => console.log(`Server on port ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
