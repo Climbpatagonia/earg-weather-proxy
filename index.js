@@ -14,6 +14,7 @@ const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
+// --- FUNCIÓN DE EXTRACCIÓN ORIGINAL (La que le gustaba al Garmin) ---
 function extractValue(html, className) {
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   const match = html.match(regex);
@@ -33,8 +34,8 @@ function parseWeatherData(html) {
     stationTime = new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false }) + " hs";
   }
 
-  // Capturamos el valor de la clase 'winddir' que son las letras
-  const direccionLetras = extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--";
+  // Extraemos la dirección exactamente como venía en la web original (en letras)
+  const direccionEnLetras = extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--";
 
   return {
     stationTime,
@@ -42,14 +43,14 @@ function parseWeatherData(html) {
     feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed: extractValue(html, 'curwindspeed'),
     windGust: extractValue(html, 'curwindgust'),
-    windDir: direccionLetras, // <--- Aquí van las letras (N, S, SO, etc.)
+    windDir: direccionEnLetras, // "N", "SW", "SO", etc.
     pressure: extractValue(html, 'barometer'),
     humidity: extractValue(html, 'outHumidity'),
     rain: extractValue(html, 'dayRain'),
   };
 }
 
-// --- ENDPOINT JSON (Para el reloj Garmin) ---
+// --- ENDPOINT JSON (El que lee tu reloj) ---
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_data");
   if (!data) {
@@ -57,15 +58,16 @@ app.get('/weather', async (req, res) => {
       const response = await axios.get(SOURCE_URL, { timeout: 8000 });
       data = parseWeatherData(response.data);
       weatherCache.set("weather_data", data);
-    } catch (e) {
-      return res.status(502).json({ error: "Error" });
+    } catch (e) { 
+      return res.status(502).json({ error: "Error de conexión" }); 
     }
   }
-  // Enviamos los datos crudos. El Garmin debería encontrar 'windDir' con las letras.
+  
+  // Enviamos los datos puros. Garmin leerá "windDir" directamente en letras
   res.json(data);
 });
 
-// --- VISTA HTML (Para el navegador) ---
+// --- VISTA HTML (Tu página web) ---
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -87,12 +89,14 @@ app.get('/', async (req, res) => {
           body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
           .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
           h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
+          
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
-            margin-bottom: 0.5rem; 
-            padding-bottom: 4rem; /* BAJA LA LÍNEA */
+            margin-bottom: 0.5rem;  /* Datos bien pegados arriba */
+            padding-bottom: 4rem;   /* Línea empujada hacia abajo */
             border-bottom: 1px solid #334155; 
           }
+          
           table { width: 100%; border-collapse: collapse; }
           td { padding: 10px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
@@ -121,7 +125,7 @@ app.get('/', async (req, res) => {
   } catch (e) { res.status(502).send("Error"); }
 });
 
-// Sincronización Windguru
+// Sincronización Windguru cada 2 min
 setInterval(async () => {
   if (!WG_UID || !WG_PASSWORD) return;
   let d = weatherCache.get("weather_data");
