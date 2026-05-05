@@ -7,18 +7,17 @@ import md5 from 'md5';
 const app = express();
 app.use(cors());
 
-// Configuración de entorno
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/'; 
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
-// CACHÉ DE 5 MINUTOS (300 segundos)
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
 // ─── FUNCIONES DE APOYO ──────────────────────────────────────────────────
 
 function extractValue(html, className) {
+  // Regex mejorado para capturar contenido entre etiquetas con esa clase
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   const match = html.match(regex);
   if (!match || !match[1]) return null;
@@ -39,20 +38,23 @@ function parseWeatherData(html) {
       hour: '2-digit', minute: '2-digit', hour12: false 
     }) + " hs (Proxy)";
   }
+
+  // Intentamos capturar la dirección del viento con dos posibles clases
+  let windDirection = extractValue(html, 'curwinddir') || extractValue(html, 'winddir');
+
   return {
     stationTime,
     temperature: extractValue(html, 'outtemp'),
     feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed: extractValue(html, 'curwindspeed'),
     windGust: extractValue(html, 'curwindgust'),
-    windDir: extractValue(html, 'curwinddir'),
+    windDir: windDirection, // <--- Dirección del viento
     pressure: extractValue(html, 'barometer'),
     humidity: extractValue(html, 'outHumidity'),
     rain: extractValue(html, 'dayRain'),
   };
 }
 
-// FUNCIÓN DE SUBIDA A WINDGURU (CADA 2 MINUTOS)
 async function syncWithWindguru() {
   if (!WG_UID || !WG_PASSWORD) return;
   try {
@@ -72,30 +74,22 @@ async function syncWithWindguru() {
       rh: (d.humidity || '').replace(/[^0-9.-]/g, '')
     });
     await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
-    console.log(`[${new Date().toLocaleTimeString()}] Windguru: OK.`);
   } catch (err) { console.error('[Windguru] Error.'); }
 }
 
 // ─── RUTAS ──────────────────────────────────────────────────────────────────
 
-// RUTA PARA GARMIN (CORREGIDA)
 app.get('/weather', async (req, res) => {
-  // Ahora busca "weather_data" que es donde guardamos todo
   let data = weatherCache.get("weather_data");
-  
   if (data) return res.json(data);
-
   try {
     const response = await axios.get(SOURCE_URL, { timeout: 8000 });
     data = parseWeatherData(response.data);
     weatherCache.set("weather_data", data);
     res.json(data);
-  } catch (e) {
-    res.status(502).json({ error: "Estación no disponible" });
-  }
+  } catch (e) { res.status(502).json({ error: "No disponible" }); }
 });
 
-// VISTA WEB
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -118,7 +112,14 @@ app.get('/', async (req, res) => {
           body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
           .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; box-shadow: 0 20px 25px rgba(0,0,0,0.3); border: 1px solid #334155; }
           h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0 0 0.5rem 0; text-align: center; }
-          .subtitle { font-size: 0.85rem; color: #94a3b8; text-align: center; margin-bottom: 2rem; border-bottom: 1px solid #334155; padding-bottom: 1rem; }
+          .subtitle { 
+            font-size: 0.85rem; 
+            color: #94a3b8; 
+            text-align: center; 
+            margin-bottom: 3rem; 
+            border-bottom: 1px solid #334155; 
+            padding-bottom: 1.5rem; 
+          }
           table { width: 100%; border-collapse: collapse; }
           td { padding: 14px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
@@ -148,4 +149,4 @@ app.get('/', async (req, res) => {
 });
 
 setInterval(syncWithWindguru, 120000);
-app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
