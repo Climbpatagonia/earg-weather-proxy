@@ -12,12 +12,9 @@ const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/';
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
-// Mantenemos el caché de 5 min
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
-// --- EXTRACCIÓN MEJORADA ---
 function extractValue(html, className) {
-  // Regex más flexible para asegurar que capturemos la dirección (ej: "Norte", "S", "SO")
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   const match = html.match(regex);
   if (!match || !match[1]) return null;
@@ -32,15 +29,12 @@ function kmhToKnots(value) {
 
 function parseWeatherData(html) {
   let stationTime = extractValue(html, 'lastupdate');
-  if (!stationTime || stationTime.length < 3) {
-    stationTime = new Date().toLocaleTimeString('es-AR', { 
-      timeZone: 'America/Argentina/Buenos_Aires', 
-      hour: '2-digit', minute: '2-digit', hour12: false 
-    }) + " hs";
+  if (!stationTime) {
+    stationTime = new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false }) + " hs";
   }
 
-  // CORRECCIÓN VIENTO: Probamos las dos clases posibles que usa el sistema del EARG
-  const windDir = extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--";
+  // BUSQUEDA MEJORADA DE DIRECCIÓN PARA EL RELOJ
+  const windDir = extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || extractValue(html, 'winddirection') || "--";
 
   return {
     stationTime,
@@ -48,29 +42,25 @@ function parseWeatherData(html) {
     feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed: extractValue(html, 'curwindspeed'),
     windGust: extractValue(html, 'curwindgust'),
-    windDir: windDir, // Enviamos el texto (ej: "N", "Sur")
+    windDir: windDir, 
     pressure: extractValue(html, 'barometer'),
-    humidity: extractValue(html, 'outHumidity'),
-    rain: extractValue(html, 'dayRain'),
+    humidity: extractValue(html, 'outHumidity')
   };
 }
 
-// --- ENDPOINT PARA EL RELOJ GARMIN ---
+// ENDPOINT JSON (Para el reloj Garmin)
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_data");
   if (data) return res.json(data);
-
   try {
     const response = await axios.get(SOURCE_URL, { timeout: 8000 });
     data = parseWeatherData(response.data);
     weatherCache.set("weather_data", data);
-    res.json(data); // El reloj Garmin lee este JSON
-  } catch (e) {
-    res.status(502).json({ error: "Sin conexión" });
-  }
+    res.json(data);
+  } catch (e) { res.status(502).json({ error: "Error" }); }
 });
 
-// --- VISTA WEB (PARA EL NAVEGADOR) ---
+// VISTA HTML (Navegador y Web Viewers)
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -79,7 +69,6 @@ app.get('/', async (req, res) => {
       data = parseWeatherData(response.data);
       weatherCache.set("weather_data", data);
     }
-    
     const knots = kmhToKnots(data.windSpeed);
     const gustKnots = kmhToKnots(data.windGust);
 
@@ -96,15 +85,15 @@ app.get('/', async (req, res) => {
           
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
-            margin-bottom: 1rem;    /* Espacio entre LÍNEA y DATOS */
-            padding-bottom: 2.5rem; /* Espacio entre TEXTO y LÍNEA */
+            margin-bottom: 0.5rem;  /* Mantiene los DATOS ARRIBA */
+            padding-bottom: 4rem;   /* BAJA LA LÍNEA (según lo pedido) */
             border-bottom: 1px solid #334155; 
           }
           
           table { width: 100%; border-collapse: collapse; }
           td { padding: 12px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
-          .value { text-align: right; font-weight: 700; }
+          .value { text-align: right; font-weight: 700; color: #f1f5f9; }
         </style>
       </head>
       <body>
@@ -112,10 +101,11 @@ app.get('/', async (req, res) => {
           <h1>Estación Río Grande</h1>
           <p class="subtitle">Sincronización EARG - Garmin</p>
           <table>
-            <tr><td class="label">Temperatura</td><td class="value">${data.temperature} °C</td></tr>
-            <tr><td class="label">Viento</td><td class="value">${knots} kn (${data.windDir})</td></tr>
-            <tr><td class="label">Ráfaga</td><td class="value">${gustKnots} kn</td></tr>
+            <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
+            <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn (${data.windDir})</td></tr>
+            <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
           </table>
+          <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
         </div>
       </body>
       </html>
