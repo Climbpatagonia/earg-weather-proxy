@@ -13,7 +13,7 @@ const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/';
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
-// CACHÉ DE 5 MINUTOS (Sincronizado con la EARG)
+// CACHÉ DE 5 MINUTOS (300 segundos)
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
 // ─── FUNCIONES DE APOYO ──────────────────────────────────────────────────
@@ -52,55 +52,58 @@ function parseWeatherData(html) {
   };
 }
 
-// FUNCIÓN DE SUBIDA A WINDGURU
+// FUNCIÓN DE SUBIDA A WINDGURU (CADA 2 MINUTOS)
 async function syncWithWindguru() {
   if (!WG_UID || !WG_PASSWORD) return;
-  
   try {
-    // Intentamos sacar el dato del caché primero
     let d = weatherCache.get("weather_data");
-    
-    // Si el caché está vacío, hacemos una petición rápida a la fuente
     if (!d) {
       const response = await axios.get(SOURCE_URL, { timeout: 8000 });
       d = parseWeatherData(response.data);
       weatherCache.set("weather_data", d);
     }
-
     const salt = Date.now().toString();
     const hash = md5(salt + WG_UID + WG_PASSWORD);
-    
     const params = new URLSearchParams({
-      uid: WG_UID, 
-      salt, 
-      hash, 
-      interval: 120, // Reportamos intervalo de 2 min
+      uid: WG_UID, salt, hash, interval: 120,
       wind_avg: kmhToKnots(d.windSpeed),
       wind_max: kmhToKnots(d.windGust),
       temperature: (d.temperature || '').replace(/[^0-9.-]/g, ''),
       rh: (d.humidity || '').replace(/[^0-9.-]/g, '')
     });
-
     await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
-    console.log(`[${new Date().toLocaleTimeString()}] Windguru: Datos enviados (Cada 2 min).`);
-  } catch (err) {
-    console.error('[Windguru] Fallo en el envío.');
-  }
+    console.log(`[${new Date().toLocaleTimeString()}] Windguru: OK.`);
+  } catch (err) { console.error('[Windguru] Error.'); }
 }
 
 // ─── RUTAS ──────────────────────────────────────────────────────────────────
 
-app.get('/', async (req, res) => {
-  const cacheKey = "weather_data";
-  let data = weatherCache.get(cacheKey);
+// RUTA PARA GARMIN (CORREGIDA)
+app.get('/weather', async (req, res) => {
+  // Ahora busca "weather_data" que es donde guardamos todo
+  let data = weatherCache.get("weather_data");
+  
+  if (data) return res.json(data);
 
+  try {
+    const response = await axios.get(SOURCE_URL, { timeout: 8000 });
+    data = parseWeatherData(response.data);
+    weatherCache.set("weather_data", data);
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: "Estación no disponible" });
+  }
+});
+
+// VISTA WEB
+app.get('/', async (req, res) => {
+  let data = weatherCache.get("weather_data");
   try {
     if (!data) {
       const response = await axios.get(SOURCE_URL, { timeout: 10000 });
       data = parseWeatherData(response.data);
-      weatherCache.set(cacheKey, data);
+      weatherCache.set("weather_data", data);
     }
-
     const knots = kmhToKnots(data.windSpeed);
     const gustKnots = kmhToKnots(data.windGust);
 
@@ -108,8 +111,7 @@ app.get('/', async (req, res) => {
       <!DOCTYPE html>
       <html lang="es">
       <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="refresh" content="300">
+        <meta charset="UTF-8"><meta http-equiv="refresh" content="300">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>EARG - Clima</title>
         <style>
@@ -127,7 +129,7 @@ app.get('/', async (req, res) => {
       <body>
         <div class="card">
           <h1>Estación Río Grande</h1>
-          <p class="subtitle">Proxy EARG - Windguru activo</p>
+          <p class="subtitle">Sincronización EARG - Windguru - Garmin</p>
           <table>
             <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
             <tr><td class="label">Sensación térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
@@ -137,17 +139,13 @@ app.get('/', async (req, res) => {
             <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
             <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
           </table>
-          <div class="updated">🕒 Lectura Estación: ${data.stationTime}</div>
+          <div class="updated">🕒 Lectura: ${data.stationTime}</div>
         </div>
       </body>
       </html>
     `);
-  } catch (e) {
-    res.status(502).send("<div style='color:white;text-align:center;'>Error en conexión con la estación.</div>");
-  }
+  } catch (e) { res.status(502).send("Error de conexión."); }
 });
 
-// DISPARO AUTOMÁTICO PARA WINDGURU (CADA 2 MINUTOS)
 setInterval(syncWithWindguru, 120000);
-
-app.listen(PORT, () => console.log(`Sincronización dual activa en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor activo en puerto ${PORT}`));
