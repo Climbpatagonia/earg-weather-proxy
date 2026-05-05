@@ -46,7 +46,7 @@ function parseWeatherData(html) {
   };
 }
 
-// --- ENDPOINT JSON (Lo que lee el Garmin) ---
+// --- ENDPOINT JSON (Garmin) ---
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_data");
   if (data) return res.json(data);
@@ -58,7 +58,7 @@ app.get('/weather', async (req, res) => {
   } catch (e) { res.status(502).json({ error: "Error" }); }
 });
 
-// --- VISTA HTML (Lo que ves en el navegador/reloj) ---
+// --- VISTA HTML (Navegador) ---
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -80,14 +80,12 @@ app.get('/', async (req, res) => {
           body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
           .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
           h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
-          
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
-            margin-bottom: 0.5rem;  /* Mantiene los datos cerca de la línea */
-            padding-bottom: 4rem;   /* BAJA LA LÍNEA */
+            margin-bottom: 0.5rem; 
+            padding-bottom: 4rem; 
             border-bottom: 1px solid #334155; 
           }
-          
           table { width: 100%; border-collapse: collapse; }
           td { padding: 10px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
@@ -100,9 +98,10 @@ app.get('/', async (req, res) => {
           <p class="subtitle">Sincronización EARG - Garmin</p>
           <table>
             <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
+            <tr><td class="label">Sensación térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
             <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn</td></tr>
-            <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
             <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
+            <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
             <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
             <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
             <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
