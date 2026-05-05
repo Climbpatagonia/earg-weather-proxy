@@ -33,22 +33,20 @@ function parseWeatherData(html) {
     stationTime = new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false }) + " hs";
   }
 
-  // BUSQUEDA MEJORADA DE DIRECCIÓN PARA EL RELOJ
-  const windDir = extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || extractValue(html, 'winddirection') || "--";
-
   return {
     stationTime,
     temperature: extractValue(html, 'outtemp'),
     feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed: extractValue(html, 'curwindspeed'),
     windGust: extractValue(html, 'curwindgust'),
-    windDir: windDir, 
+    windDir: extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--", 
     pressure: extractValue(html, 'barometer'),
-    humidity: extractValue(html, 'outHumidity')
+    humidity: extractValue(html, 'outHumidity'),
+    rain: extractValue(html, 'dayRain'),
   };
 }
 
-// ENDPOINT JSON (Para el reloj Garmin)
+// --- ENDPOINT JSON (Lo que lee el Garmin) ---
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_data");
   if (data) return res.json(data);
@@ -60,7 +58,7 @@ app.get('/weather', async (req, res) => {
   } catch (e) { res.status(502).json({ error: "Error" }); }
 });
 
-// VISTA HTML (Navegador y Web Viewers)
+// --- VISTA HTML (Lo que ves en el navegador/reloj) ---
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -85,13 +83,13 @@ app.get('/', async (req, res) => {
           
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
-            margin-bottom: 0.5rem;  /* Mantiene los DATOS ARRIBA */
-            padding-bottom: 4rem;   /* BAJA LA LÍNEA (según lo pedido) */
+            margin-bottom: 0.5rem;  /* Mantiene los datos cerca de la línea */
+            padding-bottom: 4rem;   /* BAJA LA LÍNEA */
             border-bottom: 1px solid #334155; 
           }
           
           table { width: 100%; border-collapse: collapse; }
-          td { padding: 12px 8px; border-bottom: 1px solid #334155; }
+          td { padding: 10px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
           .value { text-align: right; font-weight: 700; color: #f1f5f9; }
         </style>
@@ -102,8 +100,12 @@ app.get('/', async (req, res) => {
           <p class="subtitle">Sincronización EARG - Garmin</p>
           <table>
             <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
-            <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn (${data.windDir})</td></tr>
+            <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn</td></tr>
+            <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
             <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
+            <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
+            <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
+            <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
           </table>
           <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
         </div>
