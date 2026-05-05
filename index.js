@@ -92,8 +92,8 @@ app.get('/', async (req, res) => {
           
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
-            margin-bottom: 0.5rem;  /* Datos bien pegados arriba */
-            padding-bottom: 4rem;   /* Línea empujada hacia abajo */
+            margin-bottom: 0.3rem;  /* Datos bien pegados arriba */
+            padding-bottom: 5rem;   /* Línea empujada hacia abajo */
             border-bottom: 1px solid #334155; 
           }
           
