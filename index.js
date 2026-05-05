@@ -33,32 +33,39 @@ function parseWeatherData(html) {
     stationTime = new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false }) + " hs";
   }
 
+  // Capturamos el valor de la clase 'winddir' que son las letras
+  const direccionLetras = extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--";
+
   return {
     stationTime,
     temperature: extractValue(html, 'outtemp'),
     feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed: extractValue(html, 'curwindspeed'),
     windGust: extractValue(html, 'curwindgust'),
-    windDir: extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--", 
+    windDir: direccionLetras, // <--- Aquí van las letras (N, S, SO, etc.)
     pressure: extractValue(html, 'barometer'),
     humidity: extractValue(html, 'outHumidity'),
     rain: extractValue(html, 'dayRain'),
   };
 }
 
-// --- ENDPOINT JSON (Garmin) ---
+// --- ENDPOINT JSON (Para el reloj Garmin) ---
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_data");
-  if (data) return res.json(data);
-  try {
-    const response = await axios.get(SOURCE_URL, { timeout: 8000 });
-    data = parseWeatherData(response.data);
-    weatherCache.set("weather_data", data);
-    res.json(data);
-  } catch (e) { res.status(502).json({ error: "Error" }); }
+  if (!data) {
+    try {
+      const response = await axios.get(SOURCE_URL, { timeout: 8000 });
+      data = parseWeatherData(response.data);
+      weatherCache.set("weather_data", data);
+    } catch (e) {
+      return res.status(502).json({ error: "Error" });
+    }
+  }
+  // Enviamos los datos crudos. El Garmin debería encontrar 'windDir' con las letras.
+  res.json(data);
 });
 
-// --- VISTA HTML (Navegador) ---
+// --- VISTA HTML (Para el navegador) ---
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -83,7 +90,7 @@ app.get('/', async (req, res) => {
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
             margin-bottom: 0.5rem; 
-            padding-bottom: 4rem; 
+            padding-bottom: 4rem; /* BAJA LA LÍNEA */
             border-bottom: 1px solid #334155; 
           }
           table { width: 100%; border-collapse: collapse; }
@@ -114,7 +121,7 @@ app.get('/', async (req, res) => {
   } catch (e) { res.status(502).send("Error"); }
 });
 
-// Windguru cada 2 min
+// Sincronización Windguru
 setInterval(async () => {
   if (!WG_UID || !WG_PASSWORD) return;
   let d = weatherCache.get("weather_data");
