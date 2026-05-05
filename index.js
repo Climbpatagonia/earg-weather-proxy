@@ -289,3 +289,63 @@ app.listen(PORT, () => {
   console.log(`Weather proxy running on port ${PORT}`);
   console.log(`Source URL: ${SOURCE_URL}`);
 });
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+const NodeCache = require("node-cache");
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// 1. Configuración de CORS para que Garmin pueda acceder desde cualquier origen
+app.use(cors());
+
+// 2. Configuración del caché: 180 segundos (3 minutos)
+// Esto evita saturar la página original y respeta su tasa de refresco.
+const weatherCache = new NodeCache({ stdTTL: 180 });
+
+// URL de la página original (HTTP) que Garmin no acepta directamente
+const TARGET_URL = "http://TU_URL_ORIGINAL_AQUI"; 
+
+app.get('/weather', async (req, res) => {
+    const cacheKey = "weather_data";
+
+    // 3. Intentar obtener datos del caché
+    const cachedResponse = weatherCache.get(cacheKey);
+
+    if (cachedResponse) {
+        console.log("Entregando datos desde el caché...");
+        return res.json(cachedResponse);
+    }
+
+    // 4. Si no hay caché, consultar la fuente original
+    try {
+        console.log("Consultando fuente original (HTTP)...");
+        const response = await axios.get(TARGET_URL, {
+            timeout: 5000 // Tiempo de espera de 5 segundos
+        });
+
+        const data = response.data;
+
+        // Guardar en el caché para los próximos 3 minutos
+        weatherCache.set(cacheKey, data);
+
+        // Enviar respuesta al cliente (Garmin verá esto como HTTPS)
+        res.json(data);
+    } catch (error) {
+        console.error("Error al obtener datos:", error.message);
+        
+        // Si la fuente falla, intentar devolver el último dato conocido aunque esté expirado
+        const lastKnownData = weatherCache.get(cacheKey) || { error: "No se pudo conectar con la estación" };
+        res.status(502).json(lastKnownData);
+    }
+});
+
+// Ruta de diagnóstico simple
+app.get('/', (req, res) => {
+    res.send('Proxy de clima activo y funcionando.');
+});
+
+app.listen(PORT, () => {
+    console.log(`Servidor proxy corriendo en el puerto ${PORT}`);
+});
