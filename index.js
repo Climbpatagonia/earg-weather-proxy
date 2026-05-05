@@ -12,13 +12,11 @@ const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/';
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
-// Caché de 3 minutos
 const weatherCache = new NodeCache({ stdTTL: 180 });
 
 // ─── FUNCIONES DE EXTRACCIÓN ───────────────────────────────────────────────
 
 function extractValue(html, className) {
-  // Intentamos capturar el contenido de la clase de forma más flexible
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   const match = html.match(regex);
   if (!match || !match[1]) return null;
@@ -32,12 +30,16 @@ function kmhToKnots(value) {
 }
 
 function parseWeatherData(html) {
-  // Intentamos sacar la hora de la estación
   let stationTime = extractValue(html, 'lastupdate');
   
-  // Si falla (o devuelve algo vacío), usamos la hora actual del sistema como respaldo
+  // FORZAMOS HORA DE ARGENTINA SI FALLA EL SCRAPING
   if (!stationTime || stationTime.length < 3) {
-    stationTime = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) + " (Proxy)";
+    stationTime = new Date().toLocaleTimeString('es-AR', { 
+      timeZone: 'America/Argentina/Buenos_Aires', // <--- Esto asegura GMT-3
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: false 
+    }) + " hs (Actualizado)";
   }
 
   return {
@@ -53,7 +55,7 @@ function parseWeatherData(html) {
   };
 }
 
-// ─── RUTA PRINCIPAL (HTML) ──────────────────────────────────────────────────
+// ─── RUTA PRINCIPAL ─────────────────────────────────────────────────────────
 
 app.get('/', async (req, res) => {
   const cacheKey = "html_view";
@@ -61,7 +63,6 @@ app.get('/', async (req, res) => {
 
   try {
     if (!data) {
-      // Agregamos un timeout más largo por si la página de la estación está lenta
       const response = await axios.get(SOURCE_URL, { timeout: 10000 });
       data = parseWeatherData(response.data);
       weatherCache.set(cacheKey, data);
@@ -81,19 +82,19 @@ app.get('/', async (req, res) => {
         <style>
           body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
           .card { background: #1e293b; padding: 2rem; border-radius: 1rem; width: 100%; max-width: 420px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-          h1 { color: #7dd3fc; font-size: 1.2rem; margin-bottom: 0.25rem; text-align: center; }
+          h1 { color: #7dd3fc; font-size: 1.2rem; margin: 0 0 0.25rem 0; text-align: center; }
           .subtitle { font-size: 0.8rem; color: #64748b; text-align: center; margin-bottom: 1.5rem; }
           table { width: 100%; border-collapse: collapse; }
           td { padding: 12px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
           .value { text-align: right; font-weight: bold; color: #f1f5f9; }
-          .updated { font-size: 0.75rem; color: #818cf8; margin-top: 1.5rem; text-align: center; background: #1e1b4b; padding: 8px; border-radius: 6px; border: 1px solid #312e81; }
+          .updated { font-size: 0.85rem; color: #818cf8; margin-top: 1.5rem; text-align: center; background: #1e1b4b; padding: 10px; border-radius: 6px; border: 1px solid #312e81; }
         </style>
       </head>
       <body>
         <div class="card">
           <h1>Estación Río Grande</h1>
-          <p class="subtitle">Datos meteorológicos en tiempo real</p>
+          <p class="subtitle">Proxy Meteorológico HTTPS</p>
           <table>
             <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
             <tr><td class="label">Sensación térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
@@ -103,24 +104,17 @@ app.get('/', async (req, res) => {
             <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'}</td></tr>
             <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'}</td></tr>
           </table>
-          <div class="updated">Lectura: ${data.stationTime}</div>
+          <div class="updated">🕒 ${data.stationTime}</div>
         </div>
       </body>
       </html>
     `);
   } catch (e) {
-    res.status(502).send(`
-      <body style="background:#0f172a;color:#e2e8f0;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;">
-        <div style="text-align:center;">
-          <p>⚠️ La estación meteorológica no responde.</p>
-          <button onclick="location.reload()" style="background:#334155;color:white;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;">Reintentar</button>
-        </div>
-      </body>
-    `);
+    res.status(502).send("<p>Error conectando con la estación.</p>");
   }
 });
 
-// ─── ENDPOINT JSON ──────────────────────────────────────────────────────────
+// ─── ENDPOINTS Y WINDGURU ────────────────────────────────────────────────────
 
 app.get('/weather', async (req, res) => {
   let data = weatherCache.get("weather_json");
@@ -132,8 +126,6 @@ app.get('/weather', async (req, res) => {
     res.json(data);
   } catch (e) { res.status(502).json({ error: "No disponible" }); }
 });
-
-// ─── WINDGURU ───────────────────────────────────────────────────────────────
 
 async function uploadToWindguru() {
   if (!WG_UID || !WG_PASSWORD) return;
@@ -149,8 +141,8 @@ async function uploadToWindguru() {
       temperature: (d.temperature || '').replace(/[^0-9.-]/g, '')
     });
     await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
-  } catch (err) { console.error('Windguru sync fail'); }
+  } catch (err) { console.error('Windguru fail'); }
 }
 
 setInterval(uploadToWindguru, 60000);
-app.listen(PORT, () => console.log(`Servidor activo puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Server OK en puerto ${PORT}`));
