@@ -1,14 +1,27 @@
-import md5 from 'md5';
 import express from 'express';
+import axios from 'axios';
+import cors from 'cors';
+import NodeCache from 'node-cache';
+import md5 from 'md5';
 
 const app = express();
+app.use(cors());
+
+// Configuración de puertos y URLs
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
-const SOURCE_URL = process.env.SOURCE_URL || 'http://earg_met.mooo.com:88/meteo/';
+const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/'; 
+const WG_UID = process.env.WG_UID;
+const WG_PASSWORD = process.env.WG_PASSWORD;
+
+// Configuración del caché: 180 segundos (3 minutos)
+const weatherCache = new NodeCache({ stdTTL: 180 });
 
 const COMPASS_POINTS = [
   'N','NNE','NE','ENE','E','ESE','SE','SSE',
   'S','SSO','SO','OSO','O','ONO','NO','NNO',
 ];
+
+// ─── FUNCIONES DE PROCESAMIENTO ──────────────────────────────────────────────
 
 function extractValue(html, className) {
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
@@ -64,294 +77,74 @@ function parseWeatherData(html) {
   };
 }
 
-function errorPage(message) {
-  return `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EARG — Sin datos</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #0f172a; color: #e2e8f0;
-      display: flex; justify-content: center; align-items: center;
-      min-height: 100vh; padding: 2rem;
-    }
-    .card {
-      background: #1e293b; border-radius: 1rem;
-      padding: 2rem 2.5rem; max-width: 480px; width: 100%; text-align: center;
-    }
-    h1 { font-size: 1.1rem; color: #7dd3fc; margin-bottom: 0.75rem; }
-    p  { color: #94a3b8; font-size: 1rem; line-height: 1.6; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Estación Astronómica Río Grande</h1>
-    <p>${message}</p>
-  </div>
-</body>
-</html>`;
-}
+// ─── RUTAS EXPRESS CON CACHÉ ──────────────────────────────────────────────────
 
-// ─── RUTAS EXPRESS ────────────────────────────────────────────────────────────
-
-app.get('/', (_req, res) => res.redirect('/weather-view'));
+app.get('/', (_req, res) => res.send('Proxy EARG activo con Caché (3 min).'));
 
 app.get('/weather', async (req, res) => {
+  const cacheKey = "weather_json";
+  const cachedData = weatherCache.get(cacheKey);
+
+  if (cachedData) {
+    return res.json(cachedData);
+  }
+
   try {
-    const response = await fetch(SOURCE_URL, { method: 'GET' });
-    if (!response.ok) {
-      return res.status(502).json({ error: 'Failed to fetch source', status: response.status });
-    }
-    const data = parseWeatherData(await response.text());
-    return res.type('json').send(JSON.stringify(data, null, 2));
+    const response = await axios.get(SOURCE_URL, { timeout: 8000 });
+    const data = parseWeatherData(response.data);
+    weatherCache.set(cacheKey, data);
+    return res.json(data);
   } catch (error) {
-    console.error('Fetch error:', error.message || error);
-    return res.status(500).json({ error: 'Internal server error', message: error.message });
+    console.error('Error fetching weather:', error.message);
+    const lastKnown = weatherCache.get(cacheKey);
+    return res.status(502).json(lastKnown || { error: 'Fuente no disponible' });
   }
 });
 
-app.get('/weather-view', async (req, res) => {
-  try {
-    const response = await fetch(SOURCE_URL, { method: 'GET' });
-    if (!response.ok) {
-      return res.status(502).type('html').send(
-        errorPage('La estación meteorológica no está disponible en este momento. Intentá de nuevo en unos minutos.')
-      );
-    }
+// ─── WINDGURU UPLOAD (Cada 60 seg) ───────────────────────────────────────────
 
-    const d = parseWeatherData(await response.text());
-
-    const rows = [
-      ['Temperatura',      d.temperature  ? `${d.temperature} °C`  : '—'],
-      ['Sensación térmica', d.feelsLike   ? `${d.feelsLike} °C`    : '—'],
-      ['Viento',           kmhToKnots(d.windSpeed) ? `${kmhToKnots(d.windSpeed)} kn` : '—'],
-      ['Ráfaga',           kmhToKnots(d.windGust)  ? `${kmhToKnots(d.windGust)} kn`  : '—'],
-      ['Dirección',        d.windDirectionDegrees                   ?? '—'],
-      ['Presión',          d.pressure                               ?? '—'],
-      ['Punto de rocío',   d.dewPoint                               ?? '—'],
-      ['Humedad',          d.humidity                               ?? '—'],
-      ['Lluvia del día',   d.rain                                   ?? '—'],
-      ['Tasa de lluvia',   d.rainRate                               ?? '—'],
-      ['Índice UV',        d.uvIndex                                ?? '—'],
-    ];
-
-    const tableRows = rows.map(([label, value]) => `
-      <tr>
-        <td class="label">${label}</td>
-        <td class="value">${value}</td>
-      </tr>`).join('');
-
-    const updatedAt = new Date(d.updatedAt).toLocaleString('es-AR', {
-      timeZone: 'America/Argentina/Ushuaia',
-      hour12: false,
-    });
-
-    return res.type('html').send(`<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EARG — Tiempo en Río Grande</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #0f172a; color: #e2e8f0;
-      display: flex; justify-content: center; align-items: flex-start;
-      min-height: 100vh; padding: 2.5rem 1rem;
-    }
-    .card {
-      background: #1e293b; border-radius: 1rem;
-      padding: 2rem 2.5rem; max-width: 480px; width: 100%;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-    }
-    h1 { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.04em; color: #7dd3fc; margin-bottom: 0.25rem; }
-    .subtitle { font-size: 0.85rem; color: #64748b; margin-bottom: 1.75rem; }
-    table { width: 100%; border-collapse: collapse; }
-    tr { border-bottom: 1px solid #334155; }
-    tr:last-child { border-bottom: none; }
-    td { padding: 0.75rem 0.25rem; font-size: 1.05rem; line-height: 1.5; }
-    td.label { color: #94a3b8; width: 55%; }
-    td.value { color: #f1f5f9; font-weight: 600; text-align: right; }
-    .updated { margin-top: 1.5rem; font-size: 0.78rem; color: #475569; text-align: right; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>Estación Astronómica Río Grande</h1>
-    <p class="subtitle">Datos meteorológicos en tiempo real</p>
-    <table>${tableRows}
-    </table>
-    <p class="updated">Actualizado: ${updatedAt}</p>
-  </div>
-</body>
-</html>`);
-  } catch (error) {
-    console.error('Fetch error:', error.message || error);
-    return res.status(500).type('html').send(
-      errorPage('No se pudo conectar con la estación meteorológica. La fuente de datos puede estar temporalmente fuera de línea.')
-    );
-  }
-});
-
-app.get('/raw', async (_req, res) => {
-  try {
-    const response = await fetch(SOURCE_URL, { method: 'GET' });
-    if (!response.ok) return res.status(502).send('Failed to fetch source page');
-    res.type('html').send(await response.text());
-  } catch (error) {
-    console.error('Fetch error:', error.message || error);
-    res.status(500).send('Proxy error');
-  }
-});
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', sourceUrl: SOURCE_URL, timestamp: new Date().toISOString() });
-});
-
-// ─── WINDGURU UPLOAD ──────────────────────────────────────────────────────────
-const WG_UID      = process.env.WG_UID;
-const WG_PASSWORD = process.env.WG_PASSWORD;
-
-// Convierte un string con posibles unidades a número flotante
 function toFloat(str) {
   if (!str) return null;
   const n = parseFloat(str.replace(',', '.').replace(/[^0-9.\-]/g, ''));
   return isNaN(n) ? null : n;
 }
 
-// Convierte punto cardinal a grados (0–360)
 function directionToDegrees(dir) {
   const map = {
-    N: 0, NNE: 22.5, NE: 45, ENE: 67.5,
-    E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
-    S: 180, SSO: 202.5, SO: 225, OSO: 247.5,
-    O: 270, ONO: 292.5, NO: 315, NNO: 337.5,
-    SSW: 202.5, SW: 225, WSW: 247.5,
-    W: 270, WNW: 292.5, NW: 315, NNW: 337.5,
+    N: 0, NNE: 22.5, NE: 45, ENE: 67.5, E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
+    S: 180, SSO: 202.5, SO: 225, OSO: 247.5, O: 270, ONO: 292.5, NO: 315, NNO: 337.5
   };
   return map[dir?.toUpperCase()] ?? null;
 }
 
 async function uploadToWindguru() {
-  if (!WG_UID || !WG_PASSWORD) {
-    console.warn('[Windguru] WG_UID o WG_PASSWORD no configurados — saltando upload.');
-    return;
-  }
+  if (!WG_UID || !WG_PASSWORD) return;
   try {
-    const response = await fetch(SOURCE_URL, { method: 'GET' });
-    if (!response.ok) throw new Error(`Source HTTP ${response.status}`);
-    const d = parseWeatherData(await response.text());
+    const response = await axios.get(SOURCE_URL);
+    const d = parseWeatherData(response.data);
+    const salt = Date.now().toString();
+    const hash = md5(salt + WG_UID + WG_PASSWORD);
 
-    const salt    = Date.now().toString();
-    const hash    = md5(salt + WG_UID + WG_PASSWORD);
+    const params = new URLSearchParams({
+      uid: WG_UID, salt, hash, interval: 60,
+      wind_avg: toFloat(kmhToKnots(d.windSpeed)),
+      wind_max: toFloat(kmhToKnots(d.windGust)),
+      wind_direction: directionToDegrees(d.windDirection),
+      temperature: toFloat(d.temperature),
+      rh: toFloat(d.humidity),
+      mslp: toFloat(d.pressure)
+    });
 
-    // Viento: la fuente entrega km/h → convertir a nudos para Windguru
-    const windAvg = toFloat(kmhToKnots(d.windSpeed));
-    const windMax = toFloat(kmhToKnots(d.windGust));
-    const windDeg = directionToDegrees(d.windDirection);
-    const temp    = toFloat(d.temperature);
-    const rh      = toFloat(d.humidity);
-    const mslp    = toFloat(d.pressure);
-    const precip  = toFloat(d.rain);
-
-    const params = new URLSearchParams({ uid: WG_UID, salt, hash, interval: 60 });
-    if (windAvg  !== null) params.set('wind_avg',        windAvg);
-    if (windMax  !== null) params.set('wind_max',        windMax);
-    if (windDeg  !== null) params.set('wind_direction',  windDeg);
-    if (temp     !== null) params.set('temperature',     temp);
-    if (rh       !== null) params.set('rh',              rh);
-    if (mslp     !== null) params.set('mslp',            mslp);
-    if (precip   !== null) {
-      params.set('precip',          precip);
-      params.set('precip_interval', 86400); // lluvia acumulada del día = 24 h
-    }
-
-    const url  = `http://www.windguru.cz/upload/api.php?${params.toString()}`;
-    const resp = await fetch(url);
-    const text = await resp.text();
-    console.log(`[Windguru] ${new Date().toISOString()} → ${text}`);
+    const resp = await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
+    console.log(`[Windguru] Update: ${resp.data}`);
   } catch (err) {
     console.error('[Windguru] Error:', err.message);
   }
 }
 
-// Envía al arrancar y luego cada 60 segundos
-uploadToWindguru();
 setInterval(uploadToWindguru, 60 * 1000);
 
-// ─── INICIO DEL SERVIDOR ──────────────────────────────────────────────────────
+// ─── INICIO ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`Weather proxy running on port ${PORT}`);
-  console.log(`Source URL: ${SOURCE_URL}`);
+  console.log(`Servidor en puerto ${PORT}. Fuente: ${SOURCE_URL}`);
 });
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-const NodeCache = require("node-cache");
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-// 1. Configuración de CORS para que Garmin pueda acceder desde cualquier origen
-app.use(cors());
-
-// 2. Configuración del caché: 180 segundos (3 minutos)
-// Esto evita saturar la página original y respeta su tasa de refresco.
-const weatherCache = new NodeCache({ stdTTL: 180 });
-
-// URL de la página original (HTTP) que Garmin no acepta directamente
-const TARGET_URL = "http://http://earg_met.mooo.com:88/meteo/"; 
-
-app.get('/weather', async (req, res) => {
-    const cacheKey = "weather_data";
-
-    // 3. Intentar obtener datos del caché
-    const cachedResponse = weatherCache.get(cacheKey);
-
-    if (cachedResponse) {
-        console.log("Entregando datos desde el caché...");
-        return res.json(cachedResponse);
-    }
-
-    // 4. Si no hay caché, consultar la fuente original
-    try {
-        console.log("Consultando fuente original (HTTP)...");
-        const response = await axios.get(TARGET_URL, {
-            timeout: 5000 // Tiempo de espera de 5 segundos
-        });
-
-        const data = response.data;
-
-        // Guardar en el caché para los próximos 3 minutos
-        weatherCache.set(cacheKey, data);
-
-        // Enviar respuesta al cliente (Garmin verá esto como HTTPS)
-        res.json(data);
-    } catch (error) {
-        console.error("Error al obtener datos:", error.message);
-        
-        // Si la fuente falla, intentar devolver el último dato conocido aunque esté expirado
-        const lastKnownData = weatherCache.get(cacheKey) || { error: "No se pudo conectar con la estación" };
-        res.status(502).json(lastKnownData);
-    }
-});
-
-// Ruta de diagnóstico simple
-app.get('/', (req, res) => {
-    res.send('Proxy de clima activo y funcionando.');
-});
-
-app.listen(PORT, () => {
-    console.log(`Servidor proxy corriendo en el puerto ${PORT}`);
-});
-"dependencies": {
-  "axios": "^1.x.x",
-  "cors": "^2.x.x",
-  "express": "^4.x.x",
-  "node-cache": "^5.x.x"
-}
