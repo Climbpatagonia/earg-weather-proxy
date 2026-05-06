@@ -7,20 +7,21 @@ import md5 from 'md5';
 const app = express();
 app.use(cors());
 
+// Configuración de puertos y URLs
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/'; 
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
+// Cache de 5 minutos para no saturar la estación original
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
-// Función de extracción mejorada para evitar valores vacíos
+// --- FUNCIONES DE UTILIDAD ---
+
 function extractValue(html, className) {
-  // Busca el contenido dentro de la clase y limpia etiquetas HTML remanentes
   const regex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   const match = html.match(regex);
   if (!match || !match[1]) return null;
-  // Limpia símbolos de grado y espacios
   return match[1].replace(/&deg;|&#176;|°/g, '').trim();
 }
 
@@ -33,18 +34,10 @@ function kmhToKnots(value) {
 function parseWeatherData(html) {
   let stationTime = extractValue(html, 'lastupdate');
   if (!stationTime) {
-    stationTime = new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit', hour12: false }) + " hs";
-  }
-
-  // INTENTO DE CAPTURA DE DIRECCIÓN (Letras)
-  // Probamos con 'winddir' y si falla buscamos en el texto plano del HTML como último recurso
-  let rawDir = extractValue(html, 'winddir') || extractValue(html, 'curwinddir');
-  
-  if (!rawDir) {
-    // Intento desesperado: buscar cualquier texto corto que parezca una dirección cerca de la palabra "wind"
-    const fallbackRegex = /class="winddir">?\s*([A-Z]{1,3})/i;
-    const fallbackMatch = html.match(fallbackRegex);
-    rawDir = fallbackMatch ? fallbackMatch[1] : "--";
+    stationTime = new Date().toLocaleTimeString('es-AR', { 
+        timeZone: 'America/Argentina/Buenos_Aires', 
+        hour: '2-digit', minute: '2-digit', hour12: false 
+    }) + " hs";
   }
 
   return {
@@ -53,25 +46,45 @@ function parseWeatherData(html) {
     feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
     windSpeed: extractValue(html, 'curwindspeed'),
     windGust: extractValue(html, 'curwindgust'),
-    windDir: rawDir, 
+    windDir: extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--",
     pressure: extractValue(html, 'barometer'),
     humidity: extractValue(html, 'outHumidity'),
     rain: extractValue(html, 'dayRain'),
   };
 }
 
-app.get('/weather', async (req, res) => {
+// --- ENDPOINTS ---
+
+// 1. Endpoint específico para el Reloj Garmin (Monkey C)
+app.get('/weather-view', async (req, res) => {
   let data = weatherCache.get("weather_data");
   if (!data) {
     try {
       const response = await axios.get(SOURCE_URL, { timeout: 8000 });
       data = parseWeatherData(response.data);
       weatherCache.set("weather_data", data);
-    } catch (e) { return res.status(502).json({ error: "Error" }); }
+    } catch (e) {
+      return res.status(502).json({ error: "Error de conexión con la estación" });
+    }
   }
-  res.json(data);
+
+  // IMPORTANTE: Estos son los nombres exactos que busca tu código de VS Code
+  res.json({
+    "temperature": data.temperature,
+    "feelsLike": data.feelsLike,
+    "windSpeed": data.windSpeed,
+    "windGust": data.windGust,
+    "windDirection": data.windDir, // Aquí enviamos las letras (N, SO, etc.)
+    "stationTime": data.stationTime
+  });
 });
 
+// 2. Endpoint general (Redirige al de vista para evitar errores)
+app.get('/weather', (req, res) => {
+  res.redirect('/weather-view');
+});
+
+// 3. Vista Web (Para ver desde el navegador)
 app.get('/', async (req, res) => {
   let data = weatherCache.get("weather_data");
   try {
@@ -122,9 +135,10 @@ app.get('/', async (req, res) => {
       </body>
       </html>
     `);
-  } catch (e) { res.status(502).send("Error"); }
+  } catch (e) { res.status(502).send("Error al obtener datos"); }
 });
 
+// --- TAREA AUTOMÁTICA WINDGURU ---
 setInterval(async () => {
   if (!WG_UID || !WG_PASSWORD) return;
   let d = weatherCache.get("weather_data");
@@ -139,7 +153,9 @@ setInterval(async () => {
       temperature: (d.temperature || '').replace(/[^0-9.-]/g, '')
     });
     await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
-  } catch (e) {}
+  } catch (e) { console.error("Error Windguru:", e.message); }
 }, 120000);
 
-app.listen(PORT);
+app.listen(PORT, () => {
+  console.log("Servidor corriendo en puerto " + PORT);
+});
