@@ -68,18 +68,17 @@ app.get('/weather-view', async (req, res) => {
     }
   }
 
-  // IMPORTANTE: Estos son los nombres exactos que busca tu código de VS Code
   res.json({
     "temperature": data.temperature,
     "feelsLike": data.feelsLike,
     "windSpeed": data.windSpeed,
     "windGust": data.windGust,
-    "windDirection": data.windDir, // Aquí enviamos las letras (N, SO, etc.)
+    "windDirection": data.windDir,
     "stationTime": data.stationTime
   });
 });
 
-// 2. Endpoint general (Redirige al de vista para evitar errores)
+// 2. Endpoint general
 app.get('/weather', (req, res) => {
   res.redirect('/weather-view');
 });
@@ -100,7 +99,8 @@ app.get('/', async (req, res) => {
       <!DOCTYPE html>
       <html lang="es">
       <head>
-        <meta charset="UTF-8"><meta http-equiv="refresh" content="300">
+        <meta charset="UTF-8">
+        <meta http-equiv="refresh" content="300">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
           body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
@@ -108,9 +108,9 @@ app.get('/', async (req, res) => {
           h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
           .subtitle { 
             font-size: 0.85rem; color: #94a3b8; text-align: center; 
-            margin-bottom: 0.5rem; padding-bottom: 4rem; border-bottom: 1px solid #334155; 
+            margin-bottom: 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; 
           }
-          table { width: 100%; border-collapse: collapse; }
+          table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
           td { padding: 10px 8px; border-bottom: 1px solid #334155; }
           .label { color: #94a3b8; }
           .value { text-align: right; font-weight: 700; color: #f1f5f9; }
@@ -130,8 +130,19 @@ app.get('/', async (req, res) => {
             <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
             <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
           </table>
-          <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
+          <p id="ping-status" style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
         </div>
+
+        <script>
+          // Mantiene la app activa mientras la pestaña esté abierta
+          const PING_INTERVAL = 5 * 60 * 1000; // 5 minutos
+          function keepAlive() {
+            fetch('/weather-view')
+              .then(r => console.log("Manteniendo vivo el servidor (Status: " + r.status + ")"))
+              .catch(e => console.error("Fallo en keep-alive", e));
+          }
+          setInterval(keepAlive, PING_INTERVAL);
+        </script>
       </body>
       </html>
     `);
