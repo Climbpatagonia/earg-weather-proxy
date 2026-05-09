@@ -1,47 +1,29 @@
+
 name: Keep Render App Active
 
-# Ejecutar cada 5 minutos para mantener la app despierta
 on:
   schedule:
-    # Cron: cada 5 minutos
-    - cron: '*/5 * * * *'
-  
-  # Permitir ejecución manual desde GitHub
-  workflow_dispatch:
+    - cron: '*/5 * * * *' # Cada 5 minutos
+  workflow_dispatch: # Permite ejecutarlo a mano para probar
 
 jobs:
   keep-alive:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Ping a la app de Render con reintentos
+      - name: Despertar Render
         run: |
           URL="https://earg-weather-proxy.onrender.com/weather-view"
-          echo "🔄 Iniciando ciclo de mantenimiento para earg-weather-proxy..."
-          echo "⏰ Timestamp: $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "🔄 Enviando señal de vida a la estación..."
           
-          # Intentar hasta 3 veces si la app no responde con 200
+          # Hacemos 3 intentos por si la primera vez está muy dormido
           for i in {1..3}; do
-            echo "📡 Intento $i de 3..."
-            
-            # Petición HTTP con timeout de 30 segundos
-            response=$(curl -s -o /dev/null -w "%{http_code}" \
-              --max-time 30 \
-              $URL)
-            
-            echo "📡 Código de respuesta: $response"
-            
-            if [ $response -ge 200 ] && [ $response -lt 300 ]; then
-              echo "✅ App activa - Respuesta exitosa en el intento $i"
+            echo "Tentativa $i..."
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 45 $URL)
+            if [ "$RESPONSE" = "200" ]; then
+              echo "✅ Estación activa y respondiendo."
               break
             else
-              if [ $i -lt 3 ]; then
-                echo "⚠️ App dormida o error. Esperando 10 segundos para reintentar..."
-                sleep 10
-              else
-                echo "❌ No se pudo despertar la app tras 3 intentos."
-              fi
+              echo "⏳ Render está arrancando (Código $RESPONSE), esperando 15s..."
+              sleep 15
             fi
           done
-          
-          echo "✨ Proceso completado"
