@@ -1,29 +1,34 @@
+import axios from 'axios';
 
-name: Keep Render App Active
+// URL de tu propia aplicación en Render para que se auto-despierte
+const SELF_URL = 'https://tu-app-en-render.onrender.com/'; 
+// URL de la estación de Río Grande (mooo.com)
+const STATION_URL = 'http://earg_met.mooo.com:88/meteo/';
 
-on:
-  schedule:
-    - cron: '*/5 * * * *' # Cada 5 minutos
-  workflow_dispatch: # Permite ejecutarlo a mano para probar
+/**
+ * Función simple para hacer ping a ambas URLs
+ */
+const keepActive = async () => {
+  try {
+    // 1. Se despierta a sí mismo
+    await axios.get(SELF_URL);
+    console.log(`[${new Date().toLocaleTimeString()}] Auto-ping exitoso.`);
 
-jobs:
-  keep-alive:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Despertar Render
-        run: |
-          URL="https://earg-weather-proxy.onrender.com/weather-view"
-          echo "🔄 Enviando señal de vida a la estación..."
-          
-          # Hacemos 3 intentos por si la primera vez está muy dormido
-          for i in {1..3}; do
-            echo "Tentativa $i..."
-            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 45 $URL)
-            if [ "$RESPONSE" = "200" ]; then
-              echo "✅ Estación activa y respondiendo."
-              break
-            else
-              echo "⏳ Render está arrancando (Código $RESPONSE), esperando 15s..."
-              sleep 15
-            fi
-          done
+    // 2. Verifica que la estación de la EARG responda
+    const response = await axios.get(STATION_URL, { timeout: 10000 });
+    if (response.status === 200) {
+      console.log(`[${new Date().toLocaleTimeString()}] Estación mooo.com online.`);
+    }
+  } catch (error) {
+    console.error(`[${new Date().toLocaleTimeString()}] Error en el keep-active:`, error.message);
+  }
+};
+
+/**
+ * Ejecutar cada 10 minutos (600,000 milisegundos)
+ * Esto evita que Render apague la instancia gratuita.
+ */
+setInterval(keepActive, 600000);
+
+// Ejecución inmediata al arrancar el servidor
+keepActive();
