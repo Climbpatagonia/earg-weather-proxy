@@ -4,157 +4,217 @@ import cors from 'cors';
 import NodeCache from 'node-cache';
 import md5 from 'md5';
 
+/**
+ * CONFIGURACIÓN DE PARÁMETROS
+ * Ajusta aquí las URLs y credenciales
+ */
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
-const PRIMARY_SOURCE = 'http://earg_met.mooo.com:88/meteo/'; 
-const BACKUP_SOURCE = 'http://earg.fcaglp.unlp.edu.ar/meteorologia/vp2s1/vantalhb.htm';
+const PRIMARY_URL = 'http://earg_met.mooo.com:88/meteo/'; 
+const BACKUP_URL = 'http://earg.fcaglp.unlp.edu.ar/meteorologia/vp2s1/vantalhb.htm';
 
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
+// Cache de 5 minutos para no saturar las estaciones
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
-// --- FUNCIONES DE UTILIDAD ---
+/**
+ * BLOQUE 1: UTILIDADES DE PROCESAMIENTO
+ */
 
-function extractValue(html, className, labelText = null) {
-  // 1. Intento por Clase CSS (Estación Principal)
-  const regexClass = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
-  let match = html.match(regexClass);
-  if (match && match[1]) return match[1].replace(/&deg;|&#176;|°/g, '').trim();
-
-  // 2. Intento por Etiqueta de Texto (Para la tabla de UNLP)
-  if (labelText) {
-    // Busca el texto de la etiqueta y captura el valor en la siguiente celda <td>
-    const regexLabel = new RegExp(`${labelText}[^<]*<\\/td>\\s*<td[^>]*>\\s*([^<]+)`, 'i');
-    match = html.match(regexLabel);
-    if (match && match[1]) return match[1].replace(/&deg;|&#176;|°/g, '').trim();
-  }
-
-  return null;
+// Convierte Km/h a Nudos (Knots) de forma segura
+function toKnots(value) {
+    if (!value) return "--";
+    // Limpiamos todo lo que no sea número, punto o coma
+    const cleanValue = value.toString().replace(/,/g, '.').replace(/[^0-9.-]/g, '');
+    const num = parseFloat(cleanValue);
+    return isNaN(num) ? "--" : (num * 0.539957).toFixed(1);
 }
 
-function kmhToKnots(value) {
-  if (!value) return null;
-  const normalized = value.replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
-  return normalized.length ? (parseFloat(normalized) * 0.539957).toFixed(1) : null;
+// Limpiador de texto para evitar errores de codificación (acentos y grados)
+function cleanText(text) {
+    if (!text) return "";
+    return text
+        .replace(/&deg;/g, '°')
+        .replace(/&#176;/g, '°')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&oacute;/g, 'o')
+        .replace(/&aacute;/g, 'a')
+        .replace(/&eacute;/g, 'e')
+        .replace(/&iacute;/g, 'i')
+        .replace(/&uacute;/g, 'u')
+        .replace(/&ntilde;/g, 'ñ')
+        .trim();
 }
 
-function parseWeatherData(html) {
-  // Extraemos usando los nombres de clase de la principal o las etiquetas de la UNLP
-  return {
-    stationTime: extractValue(html, 'lastupdate', 'Hora'),
-    temperature: extractValue(html, 'outtemp', 'Temperatura Ext'),
-    feelsLike: (extractValue(html, 'feelslike', 'Sensaci&oacute;n T&eacute;rmica') || '').replace(/^ST:\s*/i, '').trim(),
-    windSpeed: extractValue(html, 'curwindspeed', 'Velocidad del Viento'),
-    windGust: extractValue(html, 'curwindgust', 'R&aacute;faga'),
-    windDir: extractValue(html, 'winddir', 'Direcci&oacute;n del Viento') || "--",
-    pressure: extractValue(html, 'barometer', 'Bar&oacute;metro'),
-    humidity: extractValue(html, 'outHumidity', 'Humedad Ext'),
-    rain: extractValue(html, 'dayRain', 'Precipitaci&oacute;n Diaria'),
-  };
-}
+/**
+ * BLOQUE 2: EL "EXTRACTOR" (SCRAPER)
+ * Busca datos ya sea por Clase CSS o por posición en tablas (UNLP)
+ */
+function extract(html, className, keywords) {
+    // 1. Intento por Clase (Estación Principal)
+    const classRegex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
+    let match = html.match(classRegex);
+    if (match && match[1]) return cleanText(match[1]);
 
-async function getWeatherData() {
-  let cached = weatherCache.get("weather_data");
-  if (cached) return cached;
-
-  try {
-    console.log("📡 Consultando principal...");
-    const response = await axios.get(PRIMARY_SOURCE, { timeout: 8000 });
-    const data = parseWeatherData(response.data);
-    if (!data.temperature) throw new Error("Datos vacíos");
-    weatherCache.set("weather_data", data);
-    return data;
-  } catch (e) {
-    console.warn("⚠️ Falló principal, intentando UNLP...");
-    try {
-      const response = await axios.get(BACKUP_SOURCE, { timeout: 10000 });
-      const data = parseWeatherData(response.data);
-      weatherCache.set("weather_data", data);
-      return data;
-    } catch (e2) {
-      return null;
+    // 2. Intento por Palabra Clave (Respaldo UNLP / Tablas)
+    for (const word of keywords) {
+        // Busca el texto de la etiqueta y captura lo que hay en el siguiente TD
+        const tableRegex = new RegExp(`${word}[^<]*<\\/td>\\s*<td[^>]*>\\s*([^<]+)`, 'i');
+        match = html.match(tableRegex);
+        if (match && match[1]) return cleanText(match[1]);
     }
-  }
+    return null;
 }
 
-// --- ENDPOINTS ---
+/**
+ * BLOQUE 3: LÓGICA DE DATOS Y REDUNDANCIA
+ */
 
+function parseAll(html) {
+    return {
+        timestamp: extract(html, 'lastupdate', ['Hora', 'Actualiz']),
+        temp: extract(html, 'outtemp', ['Temperatura Ext', 'Temp Ext']),
+        st: extract(html, 'feelslike', ['Sensaci', 'Termica', 'ST']),
+        wind: extract(html, 'curwindspeed', ['Velocidad del Viento', 'Viento']),
+        gust: extract(html, 'curwindgust', ['Rafaga', 'Viento Max']),
+        dir: extract(html, 'winddir', ['Direcci', 'Viento del']),
+        hum: extract(html, 'outHumidity', ['Humedad Ext', 'Hum Ext']),
+        press: extract(html, 'barometer', ['Barometro', 'Presion']),
+        rain: extract(html, 'dayRain', ['Precipitacion Diaria', 'Lluvia'])
+    };
+}
+
+async function fetchReliableData() {
+    let cachedData = weatherCache.get("current_weather");
+    if (cachedData) return cachedData;
+
+    console.log("--- Iniciando ciclo de obtención de datos ---");
+
+    // Intento A: Estación Principal
+    try {
+        console.log("Intentando Estación Principal (mooo.com)...");
+        const res = await axios.get(PRIMARY_URL, { timeout: 8000 });
+        const data = parseAll(res.data);
+        
+        if (data.temp && data.temp !== "") {
+            console.log("✅ Datos obtenidos de Principal");
+            weatherCache.set("current_weather", data);
+            return data;
+        }
+    } catch (err) {
+        console.warn("⚠️ Principal fuera de servicio o lenta.");
+    }
+
+    // Intento B: Estación UNLP (Respaldo)
+    try {
+        console.log("Intentando Estación UNLP (Respaldo)...");
+        const res = await axios.get(BACKUP_URL, { timeout: 10000 });
+        const data = parseAll(res.data);
+        
+        if (data.temp) {
+            console.log("✅ Datos obtenidos de UNLP");
+            weatherCache.set("current_weather", data);
+            return data;
+        }
+    } catch (err) {
+        console.error("❌ Error crítico: Ambas estaciones offline.");
+    }
+
+    return null;
+}
+
+/**
+ * BLOQUE 4: ENDPOINTS (INTERFAZ)
+ */
+
+// Para el Reloj Garmin
 app.get('/weather-view', async (req, res) => {
-  const data = await getWeatherData();
-  if (!data) return res.status(502).json({ error: "Offline" });
+    const d = await fetchReliableData();
+    if (!d) return res.status(502).json({ status: "error", message: "No data available" });
 
-  res.json({
-    "temperature": data.temperature,
-    "feelsLike": data.feelsLike,
-    "windSpeed": data.windSpeed,
-    "windGust": data.windGust,
-    "windDirection": data.windDir,
-    "stationTime": data.stationTime
-  });
-});
-
-app.get('/', async (req, res) => {
-  const data = await getWeatherData();
-  if (!data) return res.status(502).send("Estaciones no disponibles.");
-
-  const knots = kmhToKnots(data.windSpeed);
-  const gustKnots = kmhToKnots(data.windGust);
-
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="UTF-8">
-      <meta http-equiv="refresh" content="300">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <style>
-        body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
-        .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
-        h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
-        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-        td { padding: 10px 8px; border-bottom: 1px solid #334155; }
-        .label { color: #94a3b8; }
-        .value { text-align: right; font-weight: 700; color: #f1f5f9; }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <h1>Estación Río Grande</h1>
-        <table>
-          <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
-          <tr><td class="label">S. Térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
-          <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn</td></tr>
-          <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
-          <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
-          <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
-          <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
-          <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
-        </table>
-        <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
-setInterval(async () => {
-  if (!WG_UID || !WG_PASSWORD) return;
-  const d = await getWeatherData();
-  if (!d) return;
-  try {
-    const salt = Date.now().toString();
-    const hash = md5(salt + WG_UID + WG_PASSWORD);
-    const params = new URLSearchParams({
-      uid: WG_UID, salt, hash, interval: 120,
-      wind_avg: kmhToKnots(d.windSpeed),
-      wind_max: kmhToKnots(d.windGust),
-      temperature: (d.temperature || '').replace(/[^0-9.-]/g, '')
+    res.json({
+        temp: d.temp,
+        st: d.st,
+        windKnots: toKnots(d.wind),
+        gustKnots: toKnots(d.gust),
+        direction: d.dir,
+        time: d.timestamp
     });
-    await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
-  } catch (e) { console.error("Error Windguru:", e.message); }
-}, 120000);
+});
 
-app.listen(PORT);
+// Para visualización Web (Render)
+app.get('/', async (req, res) => {
+    const d = await fetchReliableData();
+    if (!d) return res.status(502).send("Sistemas meteorológicos de Río Grande temporalmente fuera de línea.");
+
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Meteo Río Grande</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f172a; color: white; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+                .box { background: #1e293b; padding: 30px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); width: 320px; border: 1px solid #334155; }
+                h1 { font-size: 1.2rem; color: #38bdf8; text-align: center; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 1px; }
+                .row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #334155; }
+                .label { color: #94a3b8; font-size: 0.9rem; }
+                .val { font-weight: bold; color: #f1f5f9; }
+                .footer { text-align: center; color: #6366f1; font-size: 0.75rem; margin-top: 20px; font-weight: 500; }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h1>Río Grande Meteo</h1>
+                <div class="row"><span class="label">Temperatura</span><span class="val">${d.temp} °C</span></div>
+                <div class="row"><span class="label">S. Térmica</span><span class="val">${d.st || d.temp} °C</span></div>
+                <div class="row"><span class="label">Viento</span><span class="val">${toKnots(d.wind)} kn</span></div>
+                <div class="row"><span class="label">Ráfaga</span><span class="val">${toKnots(d.gust)} kn</span></div>
+                <div class="row"><span class="label">Dirección</span><span class="val">${d.dir}</span></div>
+                <div class="row"><span class="label">Humedad</span><span class="val">${d.hum} %</span></div>
+                <div class="row"><span class="label">Presión</span><span class="val">${d.press} hPa</span></div>
+                <div class="row" style="border:none;"><span class="label">Lluvia</span><span class="val">${d.rain} mm</span></div>
+                <div class="footer">Actualizado: ${d.timestamp}</div>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+/**
+ * BLOQUE 5: TAREAS AUTOMÁTICAS (WINDGURU)
+ */
+setInterval(async () => {
+    if (!WG_UID || !WG_PASSWORD) return;
+    
+    const d = await fetchReliableData();
+    if (!d) return;
+
+    try {
+        const salt = Date.now().toString();
+        const hash = md5(salt + WG_UID + WG_PASSWORD);
+        const params = {
+            uid: WG_UID,
+            salt: salt,
+            hash: hash,
+            interval: 120,
+            wind_avg: toKnots(d.wind),
+            wind_max: toKnots(d.gust),
+            temperature: d.temp.replace(/[^0-9.-]/g, '')
+        };
+
+        await axios.get('http://www.windguru.cz/upload/api.php', { params });
+        console.log("📤 Datos enviados a Windguru exitosamente");
+    } catch (e) {
+        console.error("❌ Error al subir a Windguru:", e.message);
+    }
+}, 120000); // Cada 2 minutos
+
+app.listen(PORT, () => {
+    console.log(`✅ Servidor iniciado en puerto ${PORT}`);
+    console.log(`🔗 Monitoreo activo para Windguru ID: ${WG_UID}`);
+});
