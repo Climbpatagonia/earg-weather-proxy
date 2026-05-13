@@ -7,7 +7,6 @@ import md5 from 'md5';
 const app = express();
 app.use(cors());
 
-// Configuración de puertos y URLs
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const PRIMARY_SOURCE = 'http://earg_met.mooo.com:88/meteo/'; 
 const BACKUP_SOURCE = 'http://earg.fcaglp.unlp.edu.ar/meteorologia/vp2s1/vantalhb.htm';
@@ -19,19 +18,21 @@ const weatherCache = new NodeCache({ stdTTL: 300 });
 
 // --- FUNCIONES DE UTILIDAD ---
 
-function extractValue(html, className) {
-  // Intenta buscar por clase (Estación principal)
+function extractValue(html, className, labelText = null) {
+  // 1. Intento por Clase CSS (Estación Principal)
   const regexClass = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
   let match = html.match(regexClass);
-  
-  if (!match) {
-    // Si falla, intenta buscar por ID (formato de algunas tablas de UNLP)
-    const regexId = new RegExp(`<[^>]*id=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
-    match = html.match(regexId);
+  if (match && match[1]) return match[1].replace(/&deg;|&#176;|°/g, '').trim();
+
+  // 2. Intento por Etiqueta de Texto (Para la tabla de UNLP)
+  if (labelText) {
+    // Busca el texto de la etiqueta y captura el valor en la siguiente celda <td>
+    const regexLabel = new RegExp(`${labelText}[^<]*<\\/td>\\s*<td[^>]*>\\s*([^<]+)`, 'i');
+    match = html.match(regexLabel);
+    if (match && match[1]) return match[1].replace(/&deg;|&#176;|°/g, '').trim();
   }
 
-  if (!match || !match[1]) return null;
-  return match[1].replace(/&deg;|&#176;|°/g, '').trim();
+  return null;
 }
 
 function kmhToKnots(value) {
@@ -41,25 +42,17 @@ function kmhToKnots(value) {
 }
 
 function parseWeatherData(html) {
-  let stationTime = extractValue(html, 'lastupdate');
-  
-  if (!stationTime) {
-    stationTime = new Date().toLocaleTimeString('es-AR', { 
-        timeZone: 'America/Argentina/Buenos_Aires', 
-        hour: '2-digit', minute: '2-digit', hour12: false 
-    }) + " hs";
-  }
-
+  // Extraemos usando los nombres de clase de la principal o las etiquetas de la UNLP
   return {
-    stationTime,
-    temperature: extractValue(html, 'outtemp'),
-    feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
-    windSpeed: extractValue(html, 'curwindspeed'),
-    windGust: extractValue(html, 'curwindgust'),
-    windDir: extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--",
-    pressure: extractValue(html, 'barometer'),
-    humidity: extractValue(html, 'outHumidity'),
-    rain: extractValue(html, 'dayRain'),
+    stationTime: extractValue(html, 'lastupdate', 'Hora'),
+    temperature: extractValue(html, 'outtemp', 'Temperatura Ext'),
+    feelsLike: (extractValue(html, 'feelslike', 'Sensaci&oacute;n T&eacute;rmica') || '').replace(/^ST:\s*/i, '').trim(),
+    windSpeed: extractValue(html, 'curwindspeed', 'Velocidad del Viento'),
+    windGust: extractValue(html, 'curwindgust', 'R&aacute;faga'),
+    windDir: extractValue(html, 'winddir', 'Direcci&oacute;n del Viento') || "--",
+    pressure: extractValue(html, 'barometer', 'Bar&oacute;metro'),
+    humidity: extractValue(html, 'outHumidity', 'Humedad Ext'),
+    rain: extractValue(html, 'dayRain', 'Precipitaci&oacute;n Diaria'),
   };
 }
 
@@ -67,26 +60,21 @@ async function getWeatherData() {
   let cached = weatherCache.get("weather_data");
   if (cached) return cached;
 
-  // Intento 1: Estación Principal
   try {
-    console.log("📡 Consultando estación principal (mooo.com)...");
+    console.log("📡 Consultando principal...");
     const response = await axios.get(PRIMARY_SOURCE, { timeout: 8000 });
     const data = parseWeatherData(response.data);
-    if (!data.temperature) throw new Error("Datos incompletos en Principal");
+    if (!data.temperature) throw new Error("Datos vacíos");
     weatherCache.set("weather_data", data);
     return data;
   } catch (e) {
-    console.warn("⚠️ Principal falló o sin datos, intentando respaldo UNLP (Tabla)...");
-    
-    // Intento 2: Estación de Respaldo (La nueva URL con tablas)
+    console.warn("⚠️ Falló principal, intentando UNLP...");
     try {
       const response = await axios.get(BACKUP_SOURCE, { timeout: 10000 });
       const data = parseWeatherData(response.data);
       weatherCache.set("weather_data", data);
-      console.log("✅ Datos obtenidos de UNLP Tabla");
       return data;
     } catch (e2) {
-      console.error("❌ Fallo total de estaciones");
       return null;
     }
   }
@@ -96,7 +84,7 @@ async function getWeatherData() {
 
 app.get('/weather-view', async (req, res) => {
   const data = await getWeatherData();
-  if (!data) return res.status(502).json({ error: "Estaciones offline" });
+  if (!data) return res.status(502).json({ error: "Offline" });
 
   res.json({
     "temperature": data.temperature,
@@ -110,7 +98,7 @@ app.get('/weather-view', async (req, res) => {
 
 app.get('/', async (req, res) => {
   const data = await getWeatherData();
-  if (!data) return res.status(502).send("Error: Estaciones no disponibles.");
+  if (!data) return res.status(502).send("Estaciones no disponibles.");
 
   const knots = kmhToKnots(data.windSpeed);
   const gustKnots = kmhToKnots(data.windGust);
@@ -126,7 +114,6 @@ app.get('/', async (req, res) => {
         body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
         .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
         h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
-        .subtitle { font-size: 0.85rem; color: #94a3b8; text-align: center; margin-bottom: 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }
         table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
         td { padding: 10px 8px; border-bottom: 1px solid #334155; }
         .label { color: #94a3b8; }
@@ -136,13 +123,15 @@ app.get('/', async (req, res) => {
     <body>
       <div class="card">
         <h1>Estación Río Grande</h1>
-        <p class="subtitle">Sincronización Dual (Principal / UNLP)</p>
         <table>
           <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
+          <tr><td class="label">S. Térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
           <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn</td></tr>
           <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
           <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
           <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
+          <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
+          <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
         </table>
         <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
       </div>
@@ -168,6 +157,4 @@ setInterval(async () => {
   } catch (e) { console.error("Error Windguru:", e.message); }
 }, 120000);
 
-app.listen(PORT, () => {
-  console.log("🚀 Servidor en puerto " + PORT);
-});
+app.listen(PORT);
