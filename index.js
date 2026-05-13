@@ -16,34 +16,13 @@ const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 300 });
 
-// --- FUNCIONES DE LIMPIEZA (Sintaxis simplificada para evitar errores) ---
+// --- FUNCIONES BÁSICAS ---
 
-function toKnots(value) {
-  if (!value) return "--";
-  let s = value.toString().replace(/,/g, '.');
-  s = s.replace(/[^0-9.-]/g, '');
-  const n = parseFloat(s);
+function kmhToKnots(val) {
+  if (!val) return "--";
+  const n = parseFloat(val.toString().replace(/,/g, '.').replace(/[^0-9.-]/g, ''));
   return isNaN(n) ? "--" : (n * 0.539957).toFixed(1);
 }
-
-function cleanNumeric(text) {
-  if (!text) return "";
-  const match = text.match(/[-+]?[0-9]*[.,]?[0-9]+/);
-  if (!match) return "";
-  return match[0].replace(',', '.');
-}
-
-function cleanText(text) {
-  if (!text) return "";
-  let t = text.toString();
-  // Limpieza de caracteres de la UNLP y otros
-  t = t.replace(//g, '°');
-  t = t.replace(/&deg;/g, '°');
-  t = t.replace(/&nbsp;/g, ' ');
-  return t.trim();
-}
-
-// --- EXTRACCIÓN ---
 
 function extract(html, className, keywords) {
   const classRegex = new RegExp(`<[^>]*class=["']?${className}["']?[^>]*>\\s*([^<]+)`, 'i');
@@ -58,93 +37,76 @@ function extract(html, className, keywords) {
   return null;
 }
 
-function parseAll(html) {
-  return {
-    timestamp: cleanText(extract(html, 'lastupdate', ['Hora', 'Actualiz'])),
-    temp: cleanNumeric(extract(html, 'outtemp', ['Temperatura Ext', 'Temp Ext'])),
-    st: cleanNumeric(extract(html, 'feelslike', ['Sensaci', 'Termica', 'ST'])),
-    wind: extract(html, 'curwindspeed', ['Velocidad del Viento', 'Viento']),
-    gust: extract(html, 'curwindgust', ['Rafaga', 'Viento Max']),
-    dir: cleanText(extract(html, 'winddir', ['Direcci', 'Viento del'])),
-    hum: cleanNumeric(extract(html, 'outHumidity', ['Humedad Ext', 'Hum Ext'])),
-    press: cleanNumeric(extract(html, 'barometer', ['Barometro', 'Presion'])),
-    rain: cleanNumeric(extract(html, 'dayRain', ['Precipitacion Diaria', 'Lluvia']))
-  };
-}
-
-async function getData() {
-  const cached = weatherCache.get("weather");
+async function getWeatherData() {
+  const cached = weatherCache.get("meteo");
   if (cached) return cached;
 
   try {
-    const r = await axios.get(PRIMARY_URL, { timeout: 7000 });
-    const d = parseAll(r.data);
+    const r = await axios.get(PRIMARY_URL, { timeout: 8000 });
+    const h = r.data;
+    const d = {
+      temp: extract(h, 'outtemp', ['Temperatura Ext']),
+      wind: extract(h, 'curwindspeed', ['Velocidad del Viento']),
+      gust: extract(h, 'curwindgust', ['Rafaga']),
+      dir: extract(h, 'winddir', ['Direccion']),
+      time: extract(h, 'lastupdate', ['Hora'])
+    };
     if (d.temp) {
-      weatherCache.set("weather", d);
+      weatherCache.set("meteo", d);
       return d;
     }
-  } catch (e) {
-    console.log("Probando respaldo...");
-  }
+  } catch (e) { console.log("Reintentando con UNLP..."); }
 
   try {
     const r = await axios.get(BACKUP_URL, { timeout: 10000 });
-    const d = parseAll(r.data);
-    if (d.temp) {
-      weatherCache.set("weather", d);
-      return d;
-    }
-  } catch (e) {
-    return null;
-  }
-  return null;
+    const h = r.data;
+    const d = {
+      temp: extract(h, 'outtemp', ['Temperatura Ext']),
+      wind: extract(h, 'curwindspeed', ['Velocidad del Viento']),
+      gust: extract(h, 'curwindgust', ['Rafaga']),
+      dir: extract(h, 'winddir', ['Direccion']),
+      time: extract(h, 'lastupdate', ['Hora'])
+    };
+    weatherCache.set("meteo", d);
+    return d;
+  } catch (e) { return null; }
 }
 
 // --- RUTAS ---
 
 app.get('/weather-view', async (req, res) => {
-  const d = await getData();
+  const d = await getWeatherData();
   if (!d) return res.status(502).json({ error: "offline" });
   res.json({
     temp: d.temp,
-    st: d.st || d.temp,
-    windKnots: toKnots(d.wind),
-    gustKnots: toKnots(d.gust),
+    windKnots: kmhToKnots(d.wind),
+    gustKnots: kmhToKnots(d.gust),
     direction: d.dir,
-    time: d.timestamp
+    time: d.time
   });
 });
 
 app.get('/', async (req, res) => {
-  const d = await getData();
-  if (!d) return res.status(502).send("Sistemas offline.");
-
+  const d = await getWeatherData();
+  if (!d) return res.status(502).send("Estaciones offline");
   res.send(`
-    <body style="background:#0f172a; color:white; font-family:sans-serif; display:flex; justify-content:center; padding:20px;">
-      <div style="background:#1e293b; padding:25px; border-radius:15px; width:300px; border:1px solid #334155;">
-        <h2 style="color:#38bdf8; text-align:center;">Río Grande</h2>
-        <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #334155;">
-          <span>Temp</span><b>${d.temp} °C</b>
-        </div>
-        <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #334155;">
-          <span>Viento</span><b>${toKnots(d.wind)} kn</b>
-        </div>
-        <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #334155;">
-          <span>Ráfaga</span><b>${toKnots(d.gust)} kn</b>
-        </div>
-        <div style="display:flex; justify-content:space-between; padding:10px 0;">
-          <span>Dirección</span><b>${d.dir}</b>
-        </div>
-        <p style="text-align:center; font-size:0.7rem; color:#6366f1;">${d.timestamp}</p>
+    <body style="background:#0f172a; color:white; font-family:sans-serif; padding:40px; display:flex; justify-content:center;">
+      <div style="background:#1e293b; padding:20px; border-radius:10px; width:280px; border:1px solid #334155;">
+        <h2 style="text-align:center;color:#38bdf8;">Río Grande</h2>
+        <p>Temp: <b>${d.temp}</b></p>
+        <p>Viento: <b>${kmhToKnots(d.wind)} kn</b></p>
+        <p>Ráfaga: <b>${kmhToKnots(d.gust)} kn</b></p>
+        <p>Dir: <b>${d.dir}</b></p>
+        <p style="font-size:0.7rem; color:#6366f1; text-align:center;">${d.time}</p>
       </div>
     </body>
   `);
 });
 
-// --- WINDGURU ---
+// --- TAREA WINDGURU ---
 setInterval(async () => {
   if (!WG_UID) return;
-  const d = await getData();
+  const d = await getWeatherData();
   if (!d) return;
   try {
     const salt = Date.now().toString();
@@ -152,7 +114,7 @@ setInterval(async () => {
     await axios.get('http://www.windguru.cz/upload/api.php', {
       params: {
         uid: WG_UID, salt, hash, interval: 120,
-        wind_avg: toKnots(d.wind), wind_max: toKnots(d.gust), temperature: d.temp
+        wind_avg: kmhToKnots(d.wind), wind_max: kmhToKnots(d.gust), temperature: d.temp
       }
     });
   } catch (e) {}
