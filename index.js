@@ -80,7 +80,6 @@ function decodeMetar(metar) {
 }
 
 async function getWeatherData() {
-    // 1. INTENTO EARG
     try {
         const r = await axios.get(SOURCE_URL, { timeout: 6000 });
         const html = r.data;
@@ -100,7 +99,6 @@ async function getWeatherData() {
         }
     } catch (e) {}
 
-    // 2. BACKUP SAWE
     try {
         const r = await axios.get(NOAA_RAW_URL, { timeout: 6000 });
         const lines = r.data.split('\n');
@@ -189,8 +187,11 @@ setInterval(async () => {
         const wAvg = kmhToKnots(d.windSpeed) || 0;
         const wMax = kmhToKnots(d.windGust) || 0;
         const t = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
-        await axios.get(\`http://www.windguru.cz/upload/api.php?uid=\${WG_UID}&salt=\${salt}&hash=\${hash}&wind_avg=\${wAvg}&wind_max=\${wMax}&temperature=\${t}\`);
-    } catch (e) {}
+        // URL Corregida sin escapes inválidos
+        await axios.get(`http://www.windguru.cz/upload/api.php?uid=${WG_UID}&salt=${salt}&hash=${hash}&wind_avg=${wAvg}&wind_max=${wMax}&temperature=${t}`);
+    } catch (e) {
+        console.error("Error Windguru:", e.message);
+    }
 }, 120000);
 
-app.listen(PORT);
+app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
