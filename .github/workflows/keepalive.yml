@@ -1,34 +1,30 @@
 import axios from 'axios';
 
-// URL de tu propia aplicación en Render para que se auto-despierte
-const SELF_URL = 'https://tu-app-en-render.onrender.com/'; 
-// URL de la estación de Río Grande (mooo.com)
-const STATION_URL = 'http://earg_met.mooo.com:88/meteo/';
-
 /**
- * Función simple para hacer ping a ambas URLs
+ * Función para mantener la app despierta en Render
+ * @param {string} selfUrl - La URL de tu app en Render
+ * @param {string} stationUrl - La URL de la estación (mooo.com)
  */
-const keepActive = async () => {
-  try {
-    // 1. Se despierta a sí mismo
-    await axios.get(SELF_URL);
-    console.log(`[${new Date().toLocaleTimeString()}] Auto-ping exitoso.`);
+export const startKeepAlive = (selfUrl, stationUrl) => {
+    const keepActive = async () => {
+        try {
+            // 1. Ping a sí mismo
+            await axios.get(selfUrl);
+            console.log("[" + new Date().toLocaleTimeString() + "] Auto-ping exitoso.");
 
-    // 2. Verifica que la estación de la EARG responda
-    const response = await axios.get(STATION_URL, { timeout: 10000 });
-    if (response.status === 200) {
-      console.log(`[${new Date().toLocaleTimeString()}] Estación mooo.com online.`);
-    }
-  } catch (error) {
-    console.error(`[${new Date().toLocaleTimeString()}] Error en el keep-active:`, error.message);
-  }
+            // 2. Opcional: Ping a la estación para ver si responde
+            const response = await axios.get(stationUrl, { timeout: 10000 });
+            if (response.status === 200) {
+                console.log("[" + new Date().toLocaleTimeString() + "] Estación EARG online.");
+            }
+        } catch (error) {
+            console.error("[" + new Date().toLocaleTimeString() + "] Keep-active log: " + error.message);
+        }
+    };
+
+    // Ejecutar cada 10 minutos
+    setInterval(keepActive, 600000);
+    
+    // Ejecución inmediata al arrancar
+    keepActive();
 };
-
-/**
- * Ejecutar cada 10 minutos (600,000 milisegundos)
- * Esto evita que Render apague la instancia gratuita.
- */
-setInterval(keepActive, 600000);
-
-// Ejecución inmediata al arrancar el servidor
-keepActive();
