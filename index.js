@@ -7,13 +7,23 @@ import md5 from 'md5';
 const app = express();
 app.use(cors());
 
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+const PORT = process.env.PORT || 3000;
 const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/';
 const NOAA_RAW_URL = 'https://tgftp.nws.noaa.gov/data/observations/metar/stations/SAWE.TXT';
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 300 });
+
+// --- HORA LOCAL ARGENTINA ---
+function getLocalTime() {
+    return new Date().toLocaleTimeString("es-AR", {
+        timeZone: "America/Argentina/Rio_Gallegos",
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    }) + " hs";
+}
 
 // --- UTILIDADES ---
 function extractValue(html, className) {
@@ -44,50 +54,48 @@ function decodeMetar(metar) {
             wind = (parseInt(windMatch[2]) * 1.852).toFixed(1);
             if (windMatch[3]) gust = (parseInt(windMatch[3]) * 1.852).toFixed(1);
         }
-        return { temp, wind, gust, dir, source: "SAWE (Aeropuerto)" };
+        return { temp, wind, gust, dir };
     } catch (e) { return null; }
 }
 
 async function getWeatherData() {
-    // 1. Intento EARG
+    // 1. EARG
     try {
-        const r = await axios.get(SOURCE_URL, { timeout: 5000 });
+        const r = await axios.get(SOURCE_URL, { timeout: 4500 });
         const html = r.data;
         if (html.includes('outtemp')) {
             return {
-                stationTime: extractValue(html, 'lastupdate'),
+                stationTime: extractValue(html, 'lastupdate') !== "--" ? extractValue(html, 'lastupdate') : getLocalTime(),
                 temperature: extractValue(html, 'outtemp'),
                 feelsLike: (extractValue(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim() || "--",
                 windSpeed: extractValue(html, 'curwindspeed'),
                 windGust: extractValue(html, 'curwindgust'),
                 windDir: extractValue(html, 'winddir') || extractValue(html, 'curwinddir') || "--",
                 pressure: extractValue(html, 'barometer'),
-                humidity: extractValue(html, 'outHumidity'),
                 source: "EARG (Principal)"
             };
         }
     } catch (e) {}
 
-    // 2. Backup NOAA
+    // 2. NOAA Backup
     try {
         const r = await axios.get(NOAA_RAW_URL, { timeout: 4000 });
         const decoded = decodeMetar(r.data.split('\n')[1]);
         if (decoded) {
             return {
-                stationTime: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) + " (SAWE)",
+                stationTime: getLocalTime() + " (SAWE)",
                 temperature: decoded.temp,
                 feelsLike: decoded.temp,
                 windSpeed: decoded.wind,
                 windGust: decoded.gust,
                 windDir: decoded.dir,
                 pressure: "--",
-                humidity: "--",
-                source: decoded.source
+                source: "SAWE (Aeropuerto)"
             };
         }
     } catch (e) {}
 
-    return weatherCache.get("weather_data") || null;
+    return weatherCache.get("last_valid") || null;
 }
 
 // --- ENDPOINTS ---
@@ -96,67 +104,47 @@ app.get('/weather-view', async (req, res) => {
     const data = await getWeatherData();
     if (!data) return res.status(502).json({ error: "offline" });
 
-    weatherCache.set("weather_data", data);
+    weatherCache.set("last_valid", data);
 
-    // ESTRUCTURA EXACTA DEL RELOJ QUE FUNCIONABA
+    // JSON ESTRICTO PARA EL RELOJ
+    // Forzamos a que todo sea String para evitar errores de parseo en Monkey C
     res.json({
-        "temperature": data.temperature,
-        "feelsLike": data.feelsLike,
-        "windSpeed": data.windSpeed,
-        "windGust": data.windGust,
-        "windDirection": data.windDir, // AQUÍ ESTABA EL ERROR (Era windDirection)
-        "stationTime": data.stationTime
+        "temperature": data.temperature.toString(),
+        "feelsLike": data.feelsLike.toString(),
+        "windSpeed": data.windSpeed.toString(),
+        "windGust": data.windGust.toString(),
+        "windDirection": data.windDir.toString(),
+        "stationTime": data.stationTime.toString()
     });
 });
 
 app.get('/', async (req, res) => {
-    const data = await getWeatherData();
+    const data = await getWeatherData() || weatherCache.get("last_valid");
     if (!data) return res.status(502).send("Error de conexión");
 
     const knots = kmhToKnots(data.windSpeed);
     const gustKnots = kmhToKnots(data.windGust);
 
     res.send(`
-      <!DOCTYPE html>
-      <html lang="es">
-      <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="refresh" content="300">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
-          .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
-          h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
-          .subtitle { font-size: 0.85rem; color: #94a3b8; text-align: center; margin-bottom: 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }
-          table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-          td { padding: 10px 8px; border-bottom: 1px solid #334155; }
-          .label { color: #94a3b8; }
-          .value { text-align: right; font-weight: 700; color: #f1f5f9; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>Estación Río Grande</h1>
-          <p class="subtitle">Fuente: ${data.source}</p>
-          <table>
-            <tr><td class="label">Temperatura</td><td class="value">${data.temperature} °C</td></tr>
-            <tr><td class="label">Sensación</td><td class="value">${data.feelsLike} °C</td></tr>
-            <tr><td class="label">Viento</td><td class="value">${knots} kn</td></tr>
-            <tr><td class="label">Ráfaga</td><td class="value">${gustKnots} kn</td></tr>
-            <tr><td class="label">Dirección</td><td class="value">${data.windDir}</td></tr>
-            <tr><td class="label">Presión</td><td class="value">${data.pressure} hPa</td></tr>
-          </table>
-          <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
+      <body style="background:#0f172a;color:#e2e8f0;font-family:sans-serif;display:flex;justify-content:center;padding:2rem;">
+        <div style="background:#1e293b;padding:2rem;border-radius:1rem;border:1px solid #334155;max-width:350px;width:100%;">
+          <h1 style="color:#7dd3fc;font-size:1.2rem;text-align:center;">Estación Río Grande</h1>
+          <p style="text-align:center;color:#94a3b8;font-size:0.8rem;">${data.source}</p>
+          <hr style="border:0;border-top:1px solid #334155;margin:1rem 0;">
+          <div style="display:flex;justify-content:space-between;margin:0.5rem 0;"><span>Viento:</span><b>${knots} kn</b></div>
+          <div style="display:flex;justify-content:space-between;margin:0.5rem 0;"><span>Ráfaga:</span><b>${gustKnots} kn</b></div>
+          <div style="display:flex;justify-content:space-between;margin:0.5rem 0;"><span>Temp:</span><b>${data.temperature} °C</b></div>
+          <div style="display:flex;justify-content:space-between;margin:0.5rem 0;"><span>Presión:</span><b>${data.pressure} hPa</b></div>
+          <p style="text-align:center;color:#6366f1;font-size:0.8rem;margin-top:1.5rem;">🕒 ${data.stationTime}</p>
         </div>
       </body>
-      </html>
     `);
 });
 
 // --- WINDGURU ---
 setInterval(async () => {
     if (!WG_UID || !WG_PASSWORD) return;
-    const d = weatherCache.get("weather_data");
+    const d = weatherCache.get("last_valid");
     if (!d) return;
     try {
         const salt = Date.now().toString();
@@ -169,4 +157,4 @@ setInterval(async () => {
     } catch (e) {}
 }, 120000);
 
-app.listen(PORT, () => console.log("Servidor OK en puerto " + PORT));
+app.listen(PORT, () => console.log("Servidor en puerto " + PORT));
