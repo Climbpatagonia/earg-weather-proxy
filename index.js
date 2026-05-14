@@ -18,6 +18,20 @@ const weatherCache = new NodeCache({ stdTTL: 600 });
 
 // --- UTILIDADES ---
 
+function getWindDirection(deg) {
+    if (typeof deg === 'string' && isNaN(parseInt(deg))) return deg;
+    const d = parseInt(deg);
+    const directions = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    return directions[Math.round(((d %= 360) < 0 ? d + 360 : d) / 22.5) % 16];
+}
+
+function calculateWindChill(tempC, windKmh) {
+    if (tempC > 10 || windKmh < 4.8) return tempC.toFixed(1);
+    // Fórmula oficial de Wind Chill
+    const chill = 13.12 + 0.6215 * tempC - 11.37 * Math.pow(windKmh, 0.16) + 0.3965 * tempC * Math.pow(windKmh, 0.16);
+    return chill.toFixed(1);
+}
+
 function kmhToKnots(value) {
     if (!value || value === "--") return null;
     const normalized = value.toString().replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
@@ -30,28 +44,32 @@ function extractByClass(html, className) {
     return match ? match[1].replace(/&deg;|&#176;|°/g, '').trim() : null;
 }
 
-// Decodificador para cuando falla EARG
 function decodeMetar(metar) {
     try {
         const tempMatch = metar.match(/(?:\s|)(M?\d{2})\/(M?\d{2})(?:\s|)/);
-        let temp = "--";
+        let temp = 0;
         if (tempMatch) {
-            temp = tempMatch[1].replace('M', '-');
-            temp = parseInt(temp).toString();
+            let t = tempMatch[1].replace('M', '-');
+            temp = parseInt(t);
         }
         const windMatch = metar.match(/(\d{3})(\d{2})(?:G(\d{2}))?KT/);
-        let wind = "0", gust = "0", dir = "--";
+        let wind = 0, gust = 0, dirDeg = 0;
         if (windMatch) {
-            dir = windMatch[1] + "°";
-            wind = (parseInt(windMatch[2]) * 1.852).toFixed(1);
-            if (windMatch[3]) gust = (parseInt(windMatch[3]) * 1.852).toFixed(1);
+            dirDeg = parseInt(windMatch[1]);
+            wind = parseFloat((parseInt(windMatch[2]) * 1.852).toFixed(1));
+            if (windMatch[3]) gust = parseFloat((parseInt(windMatch[3]) * 1.852).toFixed(1));
         }
-        return { temp, wind, gust, dir };
+        return { 
+            temp: temp.toString(), 
+            wind: wind.toString(), 
+            gust: gust.toString(), 
+            dir: getWindDirection(dirDeg),
+            feelsLike: calculateWindChill(temp, wind)
+        };
     } catch (e) { return null; }
 }
 
 async function getWeatherData() {
-    // 1. Intento EARG (Completo)
     try {
         const r = await axios.get(SOURCE_URL, { timeout: 4500 });
         const html = r.data;
@@ -71,7 +89,6 @@ async function getWeatherData() {
         }
     } catch (e) {}
 
-    // 2. Backup NOAA Crudo (SAWE)
     try {
         const r = await axios.get(NOAA_RAW_URL, { timeout: 4000 });
         const lines = r.data.split('\n');
@@ -80,7 +97,7 @@ async function getWeatherData() {
             return {
                 stationTime: lines[0] + " (SAWE)",
                 temperature: decoded.temp,
-                feelsLike: decoded.temp,
+                feelsLike: decoded.feelsLike,
                 windSpeed: decoded.wind,
                 windGust: decoded.gust,
                 windDir: decoded.dir,
@@ -95,20 +112,17 @@ async function getWeatherData() {
     return weatherCache.get("last_valid") || null;
 }
 
-// --- RUTAS ---
+// --- RUTAS Y SERVIDOR (IGUAL QUE EL ORIGINAL) ---
 
 app.get('/weather-view', async (req, res) => {
     const data = await getWeatherData();
-    if (data) {
-        weatherCache.set("last_valid", data);
-        return res.json(data);
-    }
+    if (data) { weatherCache.set("last_valid", data); return res.json(data); }
     res.status(502).json({ error: "Offline" });
 });
 
 app.get('/', async (req, res) => {
     const data = await getWeatherData() || weatherCache.get("last_valid");
-    if (!data) return res.status(502).send("Error de conexión");
+    if (!data) return res.status(502).send("Error");
 
     const knots = kmhToKnots(data.windSpeed);
     const gustKnots = kmhToKnots(data.windGust);
@@ -152,7 +166,6 @@ app.get('/', async (req, res) => {
     `);
 });
 
-// Windguru Job
 setInterval(async () => {
     if (!WG_UID || !WG_PASSWORD) return;
     const d = weatherCache.get("last_valid");
