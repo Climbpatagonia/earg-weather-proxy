@@ -16,6 +16,15 @@ const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 600 });
 
+// --- LÓGICA DE HORA LOCAL ---
+function getLocalTime() {
+    return new Date().toLocaleString("es-AR", {
+        timeZone: "America/Argentina/Rio_Gallegos",
+        hour: '2-digit',
+        minute: '2-digit'
+    }) + " hs";
+}
+
 // --- UTILIDADES ---
 
 function kmhToKnots(value) {
@@ -30,7 +39,6 @@ function extractByClass(html, className) {
     return match ? match[1].replace(/&deg;|&#176;|°/g, '').trim() : null;
 }
 
-// Decodificador para cuando falla EARG
 function decodeMetar(metar) {
     try {
         const tempMatch = metar.match(/(?:\s|)(M?\d{2})\/(M?\d{2})(?:\s|)/);
@@ -51,13 +59,13 @@ function decodeMetar(metar) {
 }
 
 async function getWeatherData() {
-    // 1. Intento EARG (Completo)
+    // 1. Intento EARG
     try {
         const r = await axios.get(SOURCE_URL, { timeout: 4500 });
         const html = r.data;
         if (html.includes('outtemp')) {
             return {
-                stationTime: extractByClass(html, 'lastupdate') || (new Date().toLocaleTimeString('es-AR') + " hs"),
+                stationTime: extractByClass(html, 'lastupdate') || getLocalTime(),
                 temperature: extractByClass(html, 'outtemp'),
                 feelsLike: (extractByClass(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
                 windSpeed: extractByClass(html, 'curwindspeed'),
@@ -71,14 +79,14 @@ async function getWeatherData() {
         }
     } catch (e) {}
 
-    // 2. Backup NOAA Crudo (SAWE)
+    // 2. Backup NOAA (SAWE)
     try {
         const r = await axios.get(NOAA_RAW_URL, { timeout: 4000 });
         const lines = r.data.split('\n');
         const decoded = decodeMetar(lines[1]);
         if (decoded) {
             return {
-                stationTime: lines[0] + " (SAWE)",
+                stationTime: getLocalTime() + " (SAWE)",
                 temperature: decoded.temp,
                 feelsLike: decoded.temp,
                 windSpeed: decoded.wind,
@@ -155,7 +163,7 @@ app.get('/', async (req, res) => {
 // Windguru Job
 setInterval(async () => {
     if (!WG_UID || !WG_PASSWORD) return;
-    const d = weatherCache.get("last_valid");
+    const d = weatherCache.get("last_valid") || await getWeatherData();
     if (!d) return;
     try {
         const salt = Date.now().toString();
@@ -163,8 +171,11 @@ setInterval(async () => {
         const wAvg = kmhToKnots(d.windSpeed) || 0;
         const wMax = kmhToKnots(d.windGust) || 0;
         const temp = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
-        await axios.get(`http://www.windguru.cz/upload/api.php?uid=${WG_UID}&salt=${salt}&hash=${hash}&wind_avg=${wAvg}&wind_max=${wMax}&temperature=${temp}`);
-    } catch (e) {}
+        const url = `http://www.windguru.cz/upload/api.php?uid=${WG_UID}&salt=${salt}&hash=${hash}&wind_avg=${wAvg}&wind_max=${wMax}&temperature=${temp}`;
+        await axios.get(url);
+    } catch (e) {
+        console.log("Error en subida a Windguru");
+    }
 }, 120000);
 
-app.listen(PORT);
+app.listen(PORT, () => console.log(`Escuchando en puerto ${PORT}`));
