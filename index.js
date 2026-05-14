@@ -15,7 +15,14 @@ const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 600 });
-
+// --- LÓGICA DE HORA LOCAL ---
+function getLocalTime() {
+    return new Date().toLocaleString("es-AR", {
+        timeZone: "America/Argentina/Rio_Gallegos",
+        hour: '2-digit',
+        minute: '2-digit'
+    }) + " hs";
+}
 // --- UTILIDADES ---
 
 function kmhToKnots(value) {
