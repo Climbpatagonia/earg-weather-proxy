@@ -9,7 +9,7 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/';
-const NOAA_URL = 'https://tgftp.nws.noaa.gov/data/observations/metar/decoded/SAWE.TXT';
+const NOAA_RAW_URL = 'https://tgftp.nws.noaa.gov/data/observations/metar/stations/SAWE.TXT';
 
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
@@ -30,7 +30,25 @@ function extractByClass(html, className) {
     return match ? match[1].replace(/&deg;|&#176;|°/g, '').trim() : null;
 }
 
-// --- PROCESAMIENTO DE FUENTES ---
+// Decodificador para cuando falla EARG
+function decodeMetar(metar) {
+    try {
+        const tempMatch = metar.match(/(?:\s|)(M?\d{2})\/(M?\d{2})(?:\s|)/);
+        let temp = "--";
+        if (tempMatch) {
+            temp = tempMatch[1].replace('M', '-');
+            temp = parseInt(temp).toString();
+        }
+        const windMatch = metar.match(/(\d{3})(\d{2})(?:G(\d{2}))?KT/);
+        let wind = "0", gust = "0", dir = "--";
+        if (windMatch) {
+            dir = windMatch[1] + "°";
+            wind = (parseInt(windMatch[2]) * 1.852).toFixed(1);
+            if (windMatch[3]) gust = (parseInt(windMatch[3]) * 1.852).toFixed(1);
+        }
+        return { temp, wind, gust, dir };
+    } catch (e) { return null; }
+}
 
 async function getWeatherData() {
     // 1. Intento EARG (Completo)
@@ -51,35 +69,33 @@ async function getWeatherData() {
                 source: "EARG (Principal)"
             };
         }
-    } catch (e) { console.log("EARG offline"); }
+    } catch (e) {}
 
-    // 2. Intento NOAA (Backup Aeropuerto)
+    // 2. Backup NOAA Crudo (SAWE)
     try {
-        const r = await axios.get(NOAA_URL, { timeout: 5000 });
-        const txt = r.data;
-        const tempMatch = txt.match(/Temperature:\s*([-\d.]+)\s*C/i);
-        const windMatch = txt.match(/Wind:.*at\s*([\d.]+)\s*MPH/i);
-        const dirMatch = txt.match(/Wind: from the\s*([A-Z]+)/i);
-        const windKmh = windMatch ? (parseFloat(windMatch[1]) * 1.60934).toFixed(1) : "0";
-
-        return {
-            stationTime: txt.split('\n')[0] + " (SAWE)",
-            temperature: tempMatch ? tempMatch[1] : "--",
-            feelsLike: tempMatch ? tempMatch[1] : "--",
-            windSpeed: windKmh,
-            windGust: "0",
-            windDir: dirMatch ? dirMatch[1] : "--",
-            pressure: "--",
-            humidity: "--",
-            rain: "0.0",
-            source: "SAWE (Aeropuerto)"
-        };
-    } catch (e) { console.log("NOAA offline"); }
+        const r = await axios.get(NOAA_RAW_URL, { timeout: 4000 });
+        const lines = r.data.split('\n');
+        const decoded = decodeMetar(lines[1]);
+        if (decoded) {
+            return {
+                stationTime: lines[0] + " (SAWE)",
+                temperature: decoded.temp,
+                feelsLike: decoded.temp,
+                windSpeed: decoded.wind,
+                windGust: decoded.gust,
+                windDir: decoded.dir,
+                pressure: "--",
+                humidity: "--",
+                rain: "0.0",
+                source: "SAWE (Aeropuerto)"
+            };
+        }
+    } catch (e) {}
 
     return weatherCache.get("last_valid") || null;
 }
 
-// --- ENDPOINTS ---
+// --- RUTAS ---
 
 app.get('/weather-view', async (req, res) => {
     const data = await getWeatherData();
@@ -87,7 +103,7 @@ app.get('/weather-view', async (req, res) => {
         weatherCache.set("last_valid", data);
         return res.json(data);
     }
-    res.status(502).json({ error: "Sistemas no disponibles" });
+    res.status(502).json({ error: "Offline" });
 });
 
 app.get('/', async (req, res) => {
@@ -144,13 +160,10 @@ setInterval(async () => {
     try {
         const salt = Date.now().toString();
         const hash = md5(salt + WG_UID + WG_PASSWORD);
-        const params = new URLSearchParams({
-            uid: WG_UID, salt, hash, interval: 120,
-            wind_avg: kmhToKnots(d.windSpeed) || 0,
-            wind_max: kmhToKnots(d.windGust) || 0,
-            temperature: (d.temperature || '').toString().replace(/[^0-9.-]/g, '')
-        });
-        await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
+        const wAvg = kmhToKnots(d.windSpeed) || 0;
+        const wMax = kmhToKnots(d.windGust) || 0;
+        const temp = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
+        await axios.get(`http://www.windguru.cz/upload/api.php?uid=${WG_UID}&salt=${salt}&hash=${hash}&wind_avg=${wAvg}&wind_max=${wMax}&temperature=${temp}`);
     } catch (e) {}
 }, 120000);
 
