@@ -11,24 +11,13 @@ const PORT = process.env.PORT || 3000;
 const SOURCE_URL = 'http://earg_met.mooo.com:88/meteo/';
 const NOAA_RAW_URL = 'https://tgftp.nws.noaa.gov/data/observations/metar/stations/SAWE.TXT';
 
-// Reemplaza con tu URL real de Render cuando la tengas
-const SELF_URL = 'https://earg-weather-proxy.onrender.com/'; 
-
 const WG_UID = process.env.WG_UID;
 const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 600 });
 
-// --- HORA LOCAL ---
-function getLocalTime() {
-    return new Date().toLocaleString("es-AR", {
-        timeZone: "America/Argentina/Rio_Gallegos",
-        hour: '2-digit',
-        minute: '2-digit'
-    }) + " hs";
-}
-
 // --- UTILIDADES ---
+
 function kmhToKnots(value) {
     if (!value || value === "--") return null;
     const normalized = value.toString().replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
@@ -41,6 +30,7 @@ function extractByClass(html, className) {
     return match ? match[1].replace(/&deg;|&#176;|°/g, '').trim() : null;
 }
 
+// Decodificador para cuando falla EARG
 function decodeMetar(metar) {
     try {
         const tempMatch = metar.match(/(?:\s|)(M?\d{2})\/(M?\d{2})(?:\s|)/);
@@ -61,34 +51,34 @@ function decodeMetar(metar) {
 }
 
 async function getWeatherData() {
+    // 1. Intento EARG (Completo)
     try {
-        const r = await axios.get(SOURCE_URL, { timeout: 5000 });
+        const r = await axios.get(SOURCE_URL, { timeout: 4500 });
         const html = r.data;
         if (html.includes('outtemp')) {
-            const data = {
-                stationTime: extractByClass(html, 'lastupdate') || getLocalTime(),
+            return {
+                stationTime: extractByClass(html, 'lastupdate') || (new Date().toLocaleTimeString('es-AR') + " hs"),
                 temperature: extractByClass(html, 'outtemp'),
                 feelsLike: (extractByClass(html, 'feelslike') || '').replace(/^ST:\s*/i, '').trim(),
                 windSpeed: extractByClass(html, 'curwindspeed'),
                 windGust: extractByClass(html, 'curwindgust'),
-                windDir: extractByClass(html, 'winddir') || "--",
+                windDir: extractByClass(html, 'winddir') || extractByClass(html, 'curwinddir') || "--",
                 pressure: extractByClass(html, 'barometer'),
                 humidity: extractByClass(html, 'outHumidity'),
                 rain: extractByClass(html, 'dayRain'),
                 source: "EARG (Principal)"
             };
-            weatherCache.set("last_valid", data);
-            return data;
         }
     } catch (e) {}
 
+    // 2. Backup NOAA Crudo (SAWE)
     try {
-        const r = await axios.get(NOAA_RAW_URL, { timeout: 4500 });
+        const r = await axios.get(NOAA_RAW_URL, { timeout: 4000 });
         const lines = r.data.split('\n');
         const decoded = decodeMetar(lines[1]);
         if (decoded) {
-            const data = {
-                stationTime: getLocalTime() + " (SAWE)",
+            return {
+                stationTime: lines[0] + " (SAWE)",
                 temperature: decoded.temp,
                 feelsLike: decoded.temp,
                 windSpeed: decoded.wind,
@@ -99,8 +89,6 @@ async function getWeatherData() {
                 rain: "0.0",
                 source: "SAWE (Aeropuerto)"
             };
-            weatherCache.set("last_valid", data);
-            return data;
         }
     } catch (e) {}
 
@@ -109,16 +97,17 @@ async function getWeatherData() {
 
 // --- RUTAS ---
 
-// Esta es la ruta que probablemente usa tu Garmin
 app.get('/weather-view', async (req, res) => {
     const data = await getWeatherData();
-    if (data) return res.json(data);
+    if (data) {
+        weatherCache.set("last_valid", data);
+        return res.json(data);
+    }
     res.status(502).json({ error: "Offline" });
 });
 
-// Ruta visual para el navegador
 app.get('/', async (req, res) => {
-    const data = await getWeatherData();
+    const data = await getWeatherData() || weatherCache.get("last_valid");
     if (!data) return res.status(502).send("Error de conexión");
 
     const knots = kmhToKnots(data.windSpeed);
@@ -145,37 +134,25 @@ app.get('/', async (req, res) => {
       <body>
         <div class="card">
           <h1>Estación Río Grande</h1>
-          <p class="subtitle">Fuente: \${data.source}</p>
+          <p class="subtitle">Fuente: ${data.source}</p>
           <table>
-            <tr><td class="label">Temperatura</td><td class="value">\${data.temperature || '--'} °C</td></tr>
-            <tr><td class="label">Sensación térmica</td><td class="value">\${data.feelsLike || '--'} °C</td></tr>
-            <tr><td class="label">Viento</td><td class="value">\${knots || '--'} kn</td></tr>
-            <tr><td class="label">Ráfaga</td><td class="value">\${gustKnots || '--'} kn</td></tr>
-            <tr><td class="label">Dirección</td><td class="value">\${data.windDir || '--'}</td></tr>
-            <tr><td class="label">Presión</td><td class="value">\${data.pressure || '--'} hPa</td></tr>
-            <tr><td class="label">Humedad</td><td class="value">\${data.humidity || '--'} %</td></tr>
-            <tr><td class="label">Lluvia día</td><td class="value">\${data.rain || '--'} mm</td></tr>
+            <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
+            <tr><td class="label">Sensación térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
+            <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn</td></tr>
+            <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
+            <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
+            <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
+            <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
+            <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
           </table>
-          <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 \${data.stationTime}</p>
+          <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
         </div>
       </body>
       </html>
     `);
 });
 
-// --- LÓGICA KEEP-ALIVE ---
-const keepActive = async () => {
-    try {
-        await axios.get(SELF_URL);
-        console.log(\`[\${getLocalTime()}] Auto-ping exitoso.\`);
-        await axios.get(SOURCE_URL, { timeout: 10000 });
-    } catch (error) {
-        console.error(\`[\${getLocalTime()}] Keep-active error: \${error.message}\`);
-    }
-};
-setInterval(keepActive, 600000); // 10 minutos
-
-// --- WINDGURU JOB ---
+// Windguru Job
 setInterval(async () => {
     if (!WG_UID || !WG_PASSWORD) return;
     const d = weatherCache.get("last_valid");
@@ -186,11 +163,8 @@ setInterval(async () => {
         const wAvg = kmhToKnots(d.windSpeed) || 0;
         const wMax = kmhToKnots(d.windGust) || 0;
         const temp = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
-        await axios.get(\`http://www.windguru.cz/upload/api.php?uid=\${WG_UID}&salt=\${salt}&hash=\${hash}&wind_avg=\${wAvg}&wind_max=\${wMax}&temperature=\${temp}\`);
+        await axios.get(`http://www.windguru.cz/upload/api.php?uid=${WG_UID}&salt=${salt}&hash=${hash}&wind_avg=${wAvg}&wind_max=${wMax}&temperature=${temp}`);
     } catch (e) {}
 }, 120000);
 
-app.listen(PORT, () => {
-    console.log(\`Servidor iniciado en puerto \${PORT}\`);
-    keepActive(); // Primer ping al arrancar
-});
+app.listen(PORT);
