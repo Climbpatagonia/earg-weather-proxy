@@ -16,16 +16,13 @@ const WG_PASSWORD = process.env.WG_PASSWORD;
 
 const weatherCache = new NodeCache({ stdTTL: 600 });
 
-// --- LÓGICA DE HORA LOCAL ---
 function getLocalTime() {
     return new Date().toLocaleString("es-AR", {
         timeZone: "America/Argentina/Rio_Gallegos",
-        hour: '2-digit',
-        minute: '2-digit'
+        hour: '2-digit', minute: '2-digit'
     }) + " hs";
 }
 
-// --- UTILIDADES ---
 function kmhToKnots(value) {
     if (!value || value === "--") return null;
     const normalized = value.toString().replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
@@ -96,32 +93,26 @@ async function getWeatherData() {
             };
         }
     } catch (e) {}
-
-    return weatherCache.get("last_valid") || null;
+    return null;
 }
 
-// --- RUTAS ---
-
-// RUTA CORREGIDA PARA GARMIN
 app.get('/weather-view', async (req, res) => {
     const data = await getWeatherData();
-    if (data) {
-        weatherCache.set("last_valid", data);
-        
-        // Limpiamos los datos para que el Garmin reciba números válidos
-        const cleanData = {
-            stationTime: data.stationTime,
-            temperature: parseFloat(data.temperature) || 0,
-            feelsLike: parseFloat(data.feelsLike) || 0,
-            windSpeedKnots: parseFloat(kmhToKnots(data.windSpeed)) || 0,
-            windGustKnots: parseFloat(kmhToKnots(data.windGust)) || 0,
-            windDir: data.windDir,
-            pressure: parseFloat(data.pressure) || 0,
-            humidity: parseInt(data.humidity) || 0,
-            source: data.source
-        };
-        
-        return res.json(cleanData);
+    const last = weatherCache.get("last_valid");
+    const current = data || last;
+
+    if (current) {
+        if (data) weatherCache.set("last_valid", data);
+        return res.json({
+            temp: parseFloat(current.temperature) || 0,
+            feels: parseFloat(current.feelsLike) || 0,
+            wind: parseFloat(kmhToKnots(current.windSpeed)) || 0,
+            gust: parseFloat(kmhToKnots(current.windGust) || kmhToKnots(current.windSpeed)) || 0,
+            dir: current.windDir ? current.windDir.toString() : "--",
+            pres: parseFloat(current.pressure) || 0,
+            hum: parseInt(current.humidity) || 0,
+            time: current.stationTime.split(' ')[0]
+        });
     }
     res.status(502).json({ error: "Offline" });
 });
@@ -129,65 +120,33 @@ app.get('/weather-view', async (req, res) => {
 app.get('/', async (req, res) => {
     const data = await getWeatherData() || weatherCache.get("last_valid");
     if (!data) return res.status(502).send("Error de conexión");
-
     const knots = kmhToKnots(data.windSpeed);
     const gustKnots = kmhToKnots(data.windGust);
-
     res.send(`
-      <!DOCTYPE html>
-      <html lang="es">
-      <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="refresh" content="300">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
-          .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
-          h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
-          .subtitle { font-size: 0.85rem; color: #94a3b8; text-align: center; margin-bottom: 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }
-          table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-          td { padding: 10px 8px; border-bottom: 1px solid #334155; }
-          .label { color: #94a3b8; }
-          .value { text-align: right; font-weight: 700; color: #f1f5f9; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>Estación Río Grande</h1>
-          <p class="subtitle">Fuente: ${data.source}</p>
-          <table>
-            <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
-            <tr><td class="label">Sensación térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
-            <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn</td></tr>
-            <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
-            <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
-            <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
-            <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
-            <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
-          </table>
-          <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
+      <body style="background:#0f172a;color:#e2e8f0;font-family:sans-serif;display:flex;justify-content:center;padding:2rem;">
+        <div style="background:#1e293b;padding:2rem;border-radius:1rem;border:1px solid #334155;text-align:center;">
+          <h1 style="color:#7dd3fc;font-size:1.2rem;">${data.source}</h1>
+          <p style="font-size:2rem;margin:10px 0;">${knots || '--'} kn</p>
+          <p style="color:#94a3b8;">Temp: ${data.temperature}°C | Hum: ${data.humidity}%</p>
+          <p style="color:#6366f1;font-size:0.8rem;margin-top:15px;">🕒 ${data.stationTime}</p>
         </div>
       </body>
-      </html>
     `);
 });
 
-// Windguru Job
 setInterval(async () => {
     if (!WG_UID || !WG_PASSWORD) return;
-    const d = weatherCache.get("last_valid") || await getWeatherData();
+    const d = weatherCache.get("last_valid");
     if (!d) return;
     try {
         const salt = Date.now().toString();
         const hash = md5(salt + WG_UID + WG_PASSWORD);
         const wAvg = kmhToKnots(d.windSpeed) || 0;
         const wMax = kmhToKnots(d.windGust) || 0;
-        const temp = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
-        const url = "http://www.windguru.cz/upload/api.php?uid=" + WG_UID + "&salt=" + salt + "&hash=" + hash + "&wind_avg=" + wAvg + "&wind_max=" + wMax + "&temperature=" + temp;
+        const t = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
+        const url = "http://www.windguru.cz/upload/api.php?uid=" + WG_UID + "&salt=" + salt + "&hash=" + hash + "&wind_avg=" + wAvg + "&wind_max=" + wMax + "&temperature=" + t;
         await axios.get(url);
-    } catch (e) {
-        console.log("Error en subida a Windguru");
-    }
+    } catch (e) {}
 }, 120000);
 
-app.listen(PORT, () => console.log("Escuchando en puerto " + PORT));
+app.listen(PORT, () => console.log("Servidor en puerto " + PORT));
