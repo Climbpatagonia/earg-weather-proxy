@@ -96,22 +96,26 @@ async function getWeatherData() {
     return null;
 }
 
-app.get('/weather-view', async (req, res) => {
-    const data = await getWeatherData();
-    const last = weatherCache.get("last_valid");
-    const current = data || last;
+// --- RUTAS ---
 
-    if (current) {
-        if (data) weatherCache.set("last_valid", data);
+app.get('/weather-view', async (req, res) => {
+    const data = await getWeatherData() || weatherCache.get("last_valid");
+    if (data) {
+        weatherCache.set("last_valid", data);
+        
+        // Retornamos EXACTAMENTE los mismos nombres que tenías antes
+        // Pero pasándolos por parseFloat() para que sean NÚMEROS y no TEXTO
         return res.json({
-            temp: parseFloat(current.temperature) || 0,
-            feels: parseFloat(current.feelsLike) || 0,
-            wind: parseFloat(kmhToKnots(current.windSpeed)) || 0,
-            gust: parseFloat(kmhToKnots(current.windGust) || kmhToKnots(current.windSpeed)) || 0,
-            dir: current.windDir ? current.windDir.toString() : "--",
-            pres: parseFloat(current.pressure) || 0,
-            hum: parseInt(current.humidity) || 0,
-            time: current.stationTime.split(' ')[0]
+            stationTime: data.stationTime,
+            temperature: parseFloat(data.temperature) || 0,
+            feelsLike: parseFloat(data.feelsLike) || 0,
+            windSpeed: parseFloat(data.windSpeed) || 0,
+            windGust: parseFloat(data.windGust) || 0,
+            windDir: data.windDir,
+            pressure: parseFloat(data.pressure) || 0,
+            humidity: parseFloat(data.humidity) || 0,
+            rain: parseFloat(data.rain) || 0,
+            source: data.source
         });
     }
     res.status(502).json({ error: "Offline" });
@@ -120,20 +124,50 @@ app.get('/weather-view', async (req, res) => {
 app.get('/', async (req, res) => {
     const data = await getWeatherData() || weatherCache.get("last_valid");
     if (!data) return res.status(502).send("Error de conexión");
+
     const knots = kmhToKnots(data.windSpeed);
     const gustKnots = kmhToKnots(data.windGust);
+
     res.send(`
-      <body style="background:#0f172a;color:#e2e8f0;font-family:sans-serif;display:flex;justify-content:center;padding:2rem;">
-        <div style="background:#1e293b;padding:2rem;border-radius:1rem;border:1px solid #334155;text-align:center;">
-          <h1 style="color:#7dd3fc;font-size:1.2rem;">${data.source}</h1>
-          <p style="font-size:2rem;margin:10px 0;">${knots || '--'} kn</p>
-          <p style="color:#94a3b8;">Temp: ${data.temperature}°C | Hum: ${data.humidity}%</p>
-          <p style="color:#6366f1;font-size:0.8rem;margin-top:15px;">🕒 ${data.stationTime}</p>
+      <!DOCTYPE html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="refresh" content="300">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
+          .card { background: #1e293b; padding: 2rem; border-radius: 1.2rem; width: 100%; max-width: 400px; border: 1px solid #334155; }
+          h1 { color: #7dd3fc; font-size: 1.3rem; margin: 0; text-align: center; }
+          .subtitle { font-size: 0.85rem; color: #94a3b8; text-align: center; margin-bottom: 0.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }
+          table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+          td { padding: 10px 8px; border-bottom: 1px solid #334155; }
+          .label { color: #94a3b8; }
+          .value { text-align: right; font-weight: 700; color: #f1f5f9; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>Estación Río Grande</h1>
+          <p class="subtitle">Fuente: ${data.source}</p>
+          <table>
+            <tr><td class="label">Temperatura</td><td class="value">${data.temperature || '--'} °C</td></tr>
+            <tr><td class="label">Sensación térmica</td><td class="value">${data.feelsLike || '--'} °C</td></tr>
+            <tr><td class="label">Viento</td><td class="value">${knots || '--'} kn</td></tr>
+            <tr><td class="label">Ráfaga</td><td class="value">${gustKnots || '--'} kn</td></tr>
+            <tr><td class="label">Dirección</td><td class="value">${data.windDir || '--'}</td></tr>
+            <tr><td class="label">Presión</td><td class="value">${data.pressure || '--'} hPa</td></tr>
+            <tr><td class="label">Humedad</td><td class="value">${data.humidity || '--'} %</td></tr>
+            <tr><td class="label">Lluvia día</td><td class="value">${data.rain || '--'} mm</td></tr>
+          </table>
+          <p style="text-align:center; font-size:0.8rem; color:#6366f1; margin-top:20px;">🕒 ${data.stationTime}</p>
         </div>
       </body>
+      </html>
     `);
 });
 
+// Windguru Job
 setInterval(async () => {
     if (!WG_UID || !WG_PASSWORD) return;
     const d = weatherCache.get("last_valid");
@@ -143,8 +177,8 @@ setInterval(async () => {
         const hash = md5(salt + WG_UID + WG_PASSWORD);
         const wAvg = kmhToKnots(d.windSpeed) || 0;
         const wMax = kmhToKnots(d.windGust) || 0;
-        const t = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
-        const url = "http://www.windguru.cz/upload/api.php?uid=" + WG_UID + "&salt=" + salt + "&hash=" + hash + "&wind_avg=" + wAvg + "&wind_max=" + wMax + "&temperature=" + t;
+        const temp = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
+        const url = "http://www.windguru.cz/upload/api.php?uid=" + WG_UID + "&salt=" + salt + "&hash=" + hash + "&wind_avg=" + wAvg + "&wind_max=" + wMax + "&temperature=" + temp;
         await axios.get(url);
     } catch (e) {}
 }, 120000);
