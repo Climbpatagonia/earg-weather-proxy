@@ -26,7 +26,6 @@ function getLocalTime() {
 }
 
 // --- UTILIDADES ---
-
 function kmhToKnots(value) {
     if (!value || value === "--") return null;
     const normalized = value.toString().replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
@@ -59,7 +58,6 @@ function decodeMetar(metar) {
 }
 
 async function getWeatherData() {
-    // 1. Intento EARG
     try {
         const r = await axios.get(SOURCE_URL, { timeout: 4500 });
         const html = r.data;
@@ -79,7 +77,6 @@ async function getWeatherData() {
         }
     } catch (e) {}
 
-    // 2. Backup NOAA (SAWE)
     try {
         const r = await axios.get(NOAA_RAW_URL, { timeout: 4000 });
         const lines = r.data.split('\n');
@@ -105,11 +102,26 @@ async function getWeatherData() {
 
 // --- RUTAS ---
 
+// RUTA CORREGIDA PARA GARMIN
 app.get('/weather-view', async (req, res) => {
     const data = await getWeatherData();
     if (data) {
         weatherCache.set("last_valid", data);
-        return res.json(data);
+        
+        // Limpiamos los datos para que el Garmin reciba números válidos
+        const cleanData = {
+            stationTime: data.stationTime,
+            temperature: parseFloat(data.temperature) || 0,
+            feelsLike: parseFloat(data.feelsLike) || 0,
+            windSpeedKnots: parseFloat(kmhToKnots(data.windSpeed)) || 0,
+            windGustKnots: parseFloat(kmhToKnots(data.windGust)) || 0,
+            windDir: data.windDir,
+            pressure: parseFloat(data.pressure) || 0,
+            humidity: parseInt(data.humidity) || 0,
+            source: data.source
+        };
+        
+        return res.json(cleanData);
     }
     res.status(502).json({ error: "Offline" });
 });
@@ -171,11 +183,11 @@ setInterval(async () => {
         const wAvg = kmhToKnots(d.windSpeed) || 0;
         const wMax = kmhToKnots(d.windGust) || 0;
         const temp = (d.temperature || '').toString().replace(/[^0-9.-]/g, '');
-        const url = `http://www.windguru.cz/upload/api.php?uid=${WG_UID}&salt=${salt}&hash=${hash}&wind_avg=${wAvg}&wind_max=${wMax}&temperature=${temp}`;
+        const url = "http://www.windguru.cz/upload/api.php?uid=" + WG_UID + "&salt=" + salt + "&hash=" + hash + "&wind_avg=" + wAvg + "&wind_max=" + wMax + "&temperature=" + temp;
         await axios.get(url);
     } catch (e) {
         console.log("Error en subida a Windguru");
     }
 }, 120000);
 
-app.listen(PORT, () => console.log(`Escuchando en puerto ${PORT}`));
+app.listen(PORT, () => console.log("Escuchando en puerto " + PORT));
