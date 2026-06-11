@@ -242,7 +242,6 @@ app.get('/weather-view', async (req, res) => {
       btn.disabled = false;
       btn.textContent = 'Actualizar';
     }
-    setInterval(refreshData, 5 * 60 * 1000);
   </script>
 </body>
 </html>`);
