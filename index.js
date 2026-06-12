@@ -155,15 +155,38 @@ setInterval(async () => {
   let d = weatherCache.get("weather_data");
   if (!d) return;
   try {
-    const salt = Date.now().toString();
-    const hash = md5(salt + WG_UID + WG_PASSWORD);
-    const params = new URLSearchParams({
-      uid: WG_UID, salt, hash, interval: 120,
-      wind_avg: kmhToKnots(d.windSpeed),
-      wind_max: kmhToKnots(d.windGust),
-      temperature: (d.temperature || '').replace(/[^0-9.-]/g, '')
-    });
-    await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
+const salt = Date.now().toString();
+const hash = md5(salt + WG_UID + WG_PASSWORD);
+
+function normalizeTemp(s) {
+  if (!s) return '';
+  const n = String(s).replace(/[^0-9,.\-]/g, '').replace(',', '.').trim();
+  if (!n) return '';
+  return parseFloat(n).toFixed(1); // ej. "-1.3"
+}
+
+function kmhToKnotsSafe(value) {
+  if (!value) return '';
+  const normalized = String(value).replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
+  if (!normalized) return '';
+  return (parseFloat(normalized) * 0.539957).toFixed(1);
+}
+
+const params = new URLSearchParams({
+  uid: WG_UID,
+  salt,
+  hash,
+  interval: 120,
+  wind_avg: kmhToKnotsSafe(d.windSpeed) || '',
+  wind_max: kmhToKnotsSafe(d.windGust) || '',
+  temperature: normalizeTemp(d.temperature)
+});
+
+// Log para depuración (puedes quitarlo luego)
+console.log("WG payload:", params.toString());
+
+await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
+
   } catch (e) { console.error("Error Windguru:", e.message); }
 }, 120000);
 
