@@ -7,7 +7,7 @@ import md5 from 'md5';
 const app = express();
 app.use(cors());
 
-// Configuración de puertos y URLs
+// Configuración de puertos y URLs   
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SOURCE_URL = 'http://201.251.63.225:88/meteo/'; 
 const WG_UID = process.env.WG_UID;
