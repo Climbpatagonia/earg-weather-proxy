@@ -7,7 +7,7 @@ import md5 from 'md5';
 const app = express();
 app.use(cors());
 
-// Configuración de puertos y URLs   
+// Configuración de puertos y URLs
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const SOURCE_URL = 'http://201.251.63.225:88/meteo/'; 
 const WG_UID = process.env.WG_UID;
@@ -100,7 +100,6 @@ app.get('/', async (req, res) => {
       <html lang="es">
       <head>
         <meta charset="UTF-8">
-        <meta http-equiv="refresh" content="300">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
           body { font-family: sans-serif; background: #0f172a; color: #e2e8f0; display: flex; justify-content: center; padding: 2rem 1rem; }
@@ -134,8 +133,6 @@ app.get('/', async (req, res) => {
         </div>
 
         <script>
-          // Mantiene la app activa mientras la pestaña esté abierta
-      
           // Intervalo de tiempo deseado: 15 minutos (15 * 60 * 1000 ms)
           const INTERVALO_REFRESCO = 15 * 60 * 1000; 
 
@@ -145,8 +142,7 @@ app.get('/', async (req, res) => {
             window.location.reload();
           }, INTERVALO_REFRESCO);
 
-          // 2. SOLUCIÓN PARA EL MÓVIL: Apenas desbloqueás el celular o cambiás a esta pestaña,
-          // el script se despierta y fuerza la recarga inmediata para mostrarte el tiempo real actual.
+          // 2. SOLUCIÓN PARA EL MÓVIL: Al enfocar o volver a abrir la pestaña, fuerza la recarga inmediata
           document.addEventListener("visibilitychange", () => {
             if (document.visibilityState === "visible") {
               console.log("Pestaña enfocada. Forzando actualización de datos...");
@@ -154,15 +150,20 @@ app.get('/', async (req, res) => {
             }
           });
 
-          // 3. Tu keepAlive original optimizado para mantener el servidor despierto
+          // 3. KeepAlive para mantener vivo el servidor desde el navegador del cliente
           function keepAlive() {
             fetch('/weather-view')
               .then(r => console.log("Manteniendo vivo el servidor (Status: " + r.status + ")"))
               .catch(e => console.error("Fallo en keep-alive", e));
           }
-          // Lo dejamos corriendo cada 5 minutos para asegurar que Render no duerma el backend
+          // Se ejecuta cada 5 minutos
           setInterval(keepAlive, 5 * 60 * 1000); 
         </script>
+      </body>
+      </html>
+    `);
+  } catch (e) { res.status(502).send("Error al obtener datos"); }
+});
 
 // --- TAREA AUTOMÁTICA WINDGURU ---
 setInterval(async () => {
@@ -170,37 +171,37 @@ setInterval(async () => {
   let d = weatherCache.get("weather_data");
   if (!d) return;
   try {
-const salt = Date.now().toString();
-const hash = md5(salt + WG_UID + WG_PASSWORD);
+    const salt = Date.now().toString();
+    const hash = md5(salt + WG_UID + WG_PASSWORD);
 
-function normalizeTemp(s) {
-  if (!s) return '';
-  const n = String(s).replace(/[^0-9,.\-]/g, '').replace(',', '.').trim();
-  if (!n) return '';
-  return parseFloat(n).toFixed(1); // ej. "-1.3"
-}
+    function normalizeTemp(s) {
+      if (!s) return '';
+      const n = String(s).replace(/[^0-9,.\-]/g, '').replace(',', '.').trim();
+      if (!n) return '';
+      return parseFloat(n).toFixed(1);
+    }
 
-function kmhToKnotsSafe(value) {
-  if (!value) return '';
-  const normalized = String(value).replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
-  if (!normalized) return '';
-  return (parseFloat(normalized) * 0.539957).toFixed(1);
-}
+    // Usamos la misma lógica para convertir km/h a nudos de forma segura para Windguru
+    function kmhToKnotsSafe(value) {
+      if (!value) return '';
+      const normalized = String(value).replace(/,/g, '.').replace(/[^0-9.\-]/g, '').trim();
+      if (!normalized) return '';
+      return (parseFloat(normalized) * 0.539957).toFixed(1);
+    }
 
-const params = new URLSearchParams({
-  uid: WG_UID,
-  salt,
-  hash,
-  interval: 120,
-  wind_avg: kmhToKnotsSafe(d.windSpeed) || '',
-  wind_max: kmhToKnotsSafe(d.windGust) || '',
-  temperature: normalizeTemp(d.temperature)
-});
+    const params = new URLSearchParams({
+      uid: WG_UID,
+      salt,
+      hash,
+      interval: 120,
+      wind_avg: kmhToKnotsSafe(d.windSpeed) || '',
+      wind_max: kmhToKnotsSafe(d.windGust) || '',
+      temperature: normalizeTemp(d.temperature)
+    });
 
-// Log para depuración (puedes quitarlo luego)
-console.log("WG payload:", params.toString());
+    console.log("WG payload:", params.toString());
 
-await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
+    await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
 
   } catch (e) { console.error("Error Windguru:", e.message); }
 }, 120000);
@@ -208,4 +209,3 @@ await axios.get(`http://www.windguru.cz/upload/api.php?${params.toString()}`);
 app.listen(PORT, () => {
   console.log("Servidor corriendo en puerto " + PORT);
 });
-
