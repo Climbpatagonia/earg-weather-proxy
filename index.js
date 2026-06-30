@@ -135,19 +135,34 @@ app.get('/', async (req, res) => {
 
         <script>
           // Mantiene la app activa mientras la pestaña esté abierta
-          const PING_INTERVAL = 5 * 60 * 1000; // 5 minutos
+      
+          // Intervalo de tiempo deseado: 15 minutos (15 * 60 * 1000 ms)
+          const INTERVALO_REFRESCO = 15 * 60 * 1000; 
+
+          // 1. Si la pestaña se queda abierta de fondo (ej. en la PC), hace un F5 automático cada 15 min
+          setInterval(() => {
+            console.log("Temporizador cumplido. Actualizando estación...");
+            window.location.reload();
+          }, INTERVALO_REFRESCO);
+
+          // 2. SOLUCIÓN PARA EL MÓVIL: Apenas desbloqueás el celular o cambiás a esta pestaña,
+          // el script se despierta y fuerza la recarga inmediata para mostrarte el tiempo real actual.
+          document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") {
+              console.log("Pestaña enfocada. Forzando actualización de datos...");
+              window.location.reload();
+            }
+          });
+
+          // 3. Tu keepAlive original optimizado para mantener el servidor despierto
           function keepAlive() {
             fetch('/weather-view')
               .then(r => console.log("Manteniendo vivo el servidor (Status: " + r.status + ")"))
               .catch(e => console.error("Fallo en keep-alive", e));
           }
-          setInterval(keepAlive, PING_INTERVAL);
+          // Lo dejamos corriendo cada 5 minutos para asegurar que Render no duerma el backend
+          setInterval(keepAlive, 5 * 60 * 1000); 
         </script>
-      </body>
-      </html>
-    `);
-  } catch (e) { res.status(502).send("Error al obtener datos"); }
-});
 
 // --- TAREA AUTOMÁTICA WINDGURU ---
 setInterval(async () => {
